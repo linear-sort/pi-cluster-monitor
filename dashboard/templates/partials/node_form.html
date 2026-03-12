@@ -1,0 +1,30 @@
+<form method="post" action="/settings/nodes/save" class="form-grid">
+  <input type="hidden" name="id" value="{{ node.id if node else '' }}" />
+
+  <label>Name <input name="name" required value="{{ node.name if node else '' }}" /></label>
+  <label>Hostname <input name="hostname" required value="{{ node.hostname if node else '' }}" /></label>
+  <label>IP Address <input name="ip_address" required value="{{ node.ip_address if node else '' }}" /></label>
+  <label>Token <input name="token" required value="{{ node.token if node else '' }}" /></label>
+  <label>Role <input name="role" value="{{ node.role if node else 'worker' }}" /></label>
+  <label>Agent Port <input name="agent_port" type="number" value="{{ node.agent_port if node else default_port }}" /></label>
+  <label>Poll Interval (s) <input name="poll_interval_seconds" type="number" min="3" value="{{ node.poll_interval_seconds if node else 10 }}" /></label>
+  <label>
+    Enabled
+    <select name="enabled">
+      <option value="true" {% if not node or node.enabled %}selected{% endif %}>true</option>
+      <option value="false" {% if node and not node.enabled %}selected{% endif %}>false</option>
+    </select>
+  </label>
+
+  <div>
+    <button type="submit">{{ 'Update Node' if node else 'Add Node' }}</button>
+    {% if node %}
+    <button
+      type="button"
+      hx-get="/settings/node-form"
+      hx-target="#node-form"
+      hx-swap="innerHTML"
+    >Clear</button>
+    {% endif %}
+  </div>
+</form>

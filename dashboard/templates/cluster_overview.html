@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section
+  hx-get="/partials/cluster-summary"
+  hx-trigger="load, every 5s"
+  hx-swap="innerHTML"
+  id="cluster-summary"
+>
+  {% include "partials/cluster_summary.html" %}
+</section>
+
+<section
+  hx-get="/partials/cluster-nodes"
+  hx-trigger="load, every 5s"
+  hx-swap="innerHTML"
+  id="cluster-nodes"
+>
+  {% include "partials/cluster_nodes.html" %}
+</section>
+{% endblock %}

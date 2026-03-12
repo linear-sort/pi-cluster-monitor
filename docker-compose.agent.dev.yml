@@ -1,0 +1,13 @@
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    container_name: pi-node-agent
+    network_mode: host
+    pid: host
+    environment:
+      AGENT_TOKEN: changeme
+      AGENT_NAME: ""
+      AGENT_SERVICES: ssh,cron
+    restart: unless-stopped

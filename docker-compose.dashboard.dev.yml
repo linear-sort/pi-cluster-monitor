@@ -1,0 +1,20 @@
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: pi-cluster-dashboard
+    ports:
+      - "8000:8000"
+    environment:
+      DASHBOARD_DB_PATH: /data/cluster.db
+      DASHBOARD_POLL_BASE_SECONDS: 2
+      DASHBOARD_HTTP_TIMEOUT_SECONDS: 4
+      DASHBOARD_AGENT_DEFAULT_PORT: 8001
+      DASHBOARD_METRIC_RETENTION_HOURS: 48
+      DASHBOARD_ALERT_RETENTION_DAYS: 14
+      DASHBOARD_SERVICE_RETENTION_DAYS: 7
+      DASHBOARD_CLEANUP_INTERVAL_SECONDS: 300
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

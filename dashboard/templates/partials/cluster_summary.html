@@ -1,0 +1,18 @@
+<div class="card-grid">
+  <div class="card"><h3>Total Nodes</h3><p>{{ stats.total_nodes }}</p></div>
+  <div class="card"><h3>Online</h3><p>{{ stats.online_nodes }}</p></div>
+  <div class="card"><h3>Offline</h3><p>{{ stats.offline_nodes }}</p></div>
+  <div class="card"><h3>Warning</h3><p>{{ stats.warning_nodes }}</p></div>
+  <div class="card"><h3>Critical</h3><p>{{ stats.critical_nodes }}</p></div>
+  <div class="card"><h3>Avg CPU</h3><p>{{ stats.avg_cpu_percent }}%</p></div>
+  <div class="card">
+    <h3>Hottest Node</h3>
+    <p>
+      {% if stats.hottest_node_name %}
+      {{ stats.hottest_node_name }} ({{ stats.hottest_node_temp }}C)
+      {% else %}
+      n/a
+      {% endif %}
+    </p>
+  </div>
+</div>

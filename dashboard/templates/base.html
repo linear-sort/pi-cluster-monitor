@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or "Pi Cluster Dashboard" }}</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container">
+        <h1>Pi Cluster Monitor</h1>
+        <nav>
+          <a href="/cluster" class="{% if page == 'cluster' %}active{% endif %}">Cluster</a>
+          <a href="/settings" class="{% if page == 'settings' %}active{% endif %}">Settings</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="container">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

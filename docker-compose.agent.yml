@@ -1,0 +1,12 @@
+services:
+  agent:
+    image: ${AGENT_IMAGE:-ghcr.io/your-org/pi-agent:latest}
+    pull_policy: always
+    container_name: pi-node-agent
+    network_mode: host
+    pid: host
+    environment:
+      AGENT_TOKEN: changeme
+      AGENT_NAME: ""
+      AGENT_SERVICES: ssh,cron
+    restart: unless-stopped

@@ -1,0 +1,126 @@
+name: Build and Publish Docker Images
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dashboard dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r dashboard/requirements.txt -r dashboard/requirements-dev.txt
+
+      - name: Run dashboard tests
+        working-directory: dashboard
+        run: pytest -q
+
+  test-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install agent dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r agent/requirements.txt -r agent/requirements-dev.txt
+
+      - name: Run agent tests
+        working-directory: agent
+        run: pytest -q
+
+  build-and-push:
+    needs: [test-dashboard, test-agent]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set lowercase owner
+        id: owner
+        shell: bash
+        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract dashboard metadata
+        id: meta_dashboard
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.value }}/pi-dashboard
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      - name: Build and push dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: dashboard/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta_dashboard.outputs.tags }}
+          labels: ${{ steps.meta_dashboard.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract agent metadata
+        id: meta_agent
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.value }}/pi-agent
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      - name: Build and push agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agent/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta_agent.outputs.tags }}
+          labels: ${{ steps.meta_agent.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

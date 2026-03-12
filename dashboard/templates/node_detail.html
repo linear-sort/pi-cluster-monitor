@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="panel">
+  <h2>{{ node.name }} <small>({{ node.ip_address }})</small></h2>
+  <p>
+    Status: <span class="badge {{ node.last_status }}">{{ node.last_status }}</span>
+    | Role: {{ node.role }}
+    | Last seen: {{ node.last_seen_at or 'never' }}
+  </p>
+
+  <div class="card-grid">
+    <div class="card"><h3>CPU</h3><p>{{ latest.cpu_percent if latest else '-' }}%</p></div>
+    <div class="card"><h3>Memory</h3><p>{{ latest.memory_percent if latest else '-' }}%</p></div>
+    <div class="card"><h3>Disk</h3><p>{{ latest.disk_percent if latest else '-' }}%</p></div>
+    <div class="card"><h3>Temp</h3><p>{{ latest.temperature_c if latest else '-' }} C</p></div>
+    <div class="card"><h3>Uptime</h3><p>{{ latest.uptime_seconds if latest else '-' }} s</p></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Recent Metrics</h2>
+  <canvas id="nodeChart" height="120"></canvas>
+</div>
+
+<div class="panel">
+  <h2>Recent Alerts</h2>
+  <table>
+    <thead>
+      <tr><th>Time</th><th>Severity</th><th>Alert</th><th>Value</th><th>Resolved</th></tr>
+    </thead>
+    <tbody>
+      {% for a in alerts %}
+      <tr>
+        <td>{{ a.created_at }}</td>
+        <td><span class="badge {{ a.severity }}">{{ a.severity }}</span></td>
+        <td>{{ a.key }} - {{ a.message }}</td>
+        <td>{{ a.metric_value if a.metric_value is not none else '-' }}</td>
+        <td>{{ a.resolved_at or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Service Health</h2>
+  {% if services %}
+  <table>
+    <thead>
+      <tr><th>Service</th><th>Status</th><th>Checked At</th></tr>
+    </thead>
+    <tbody>
+      {% for s in services %}
+      <tr>
+        <td>{{ s.name }}</td>
+        <td><span class="badge {{ 'online' if s.status in ['active', 'running'] else 'warning' }}">{{ s.status }}</span></td>
+        <td>{{ s.checked_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No service data available from this node.</p>
+  {% endif %}
+</div>
+
+<script>
+(async function () {
+  const response = await fetch('/nodes/{{ node.id }}/metrics?minutes=120');
+  const data = await response.json();
+
+  const ctx = document.getElementById('nodeChart');
+  if (!ctx) return;
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.labels,
+      datasets: [
+        { label: 'CPU %', data: data.cpu, borderColor: '#3b82f6', tension: 0.2 },
+        { label: 'Memory %', data: data.memory, borderColor: '#22c55e', tension: 0.2 },
+        { label: 'Disk %', data: data.disk, borderColor: '#eab308', tension: 0.2 },
+        { label: 'Temp C', data: data.temp, borderColor: '#ef4444', tension: 0.2 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { y: { beginAtZero: true } },
+    },
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="panel">
+  <h2>Node Management</h2>
+  <div id="node-form"
+       hx-get="/settings/node-form"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Configured Nodes</h2>
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Host</th><th>IP</th><th>Port</th><th>Role</th><th>Poll</th><th>Enabled</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for n in nodes %}
+      <tr>
+        <td>{{ n.name }}</td>
+        <td>{{ n.hostname }}</td>
+        <td>{{ n.ip_address }}</td>
+        <td>{{ n.agent_port }}</td>
+        <td>{{ n.role }}</td>
+        <td>{{ n.poll_interval_seconds }}s</td>
+        <td><span class="badge {{ 'online' if n.enabled else 'offline' }}">{{ 'yes' if n.enabled else 'no' }}</span></td>
+        <td>
+          <button
+            hx-get="/settings/node-form?node_id={{ n.id }}"
+            hx-target="#node-form"
+            hx-swap="innerHTML"
+          >Edit</button>
+          <form method="post" action="/settings/nodes/{{ n.id }}/toggle" style="display:inline">
+            <button type="submit">{{ 'Disable' if n.enabled else 'Enable' }}</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
