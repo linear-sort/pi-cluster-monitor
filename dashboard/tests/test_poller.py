@@ -9,6 +9,8 @@ from app.db import ensure_db, get_conn, utc_now_iso
 from app.models import AgentMetrics
 from app.services.poller import PollingService
 
+pytestmark = pytest.mark.unit
+
 
 def _seed_node(db_path: Path, last_seen_at: str | None = None) -> int:
     with get_conn(db_path) as conn:

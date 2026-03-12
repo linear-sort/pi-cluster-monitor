@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models import MetricsResponse, ServiceStatus
+
+pytestmark = pytest.mark.integration
 
 
 def _auth_header(token: str) -> dict[str, str]:

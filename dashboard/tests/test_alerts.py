@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.db import ensure_db, get_conn, utc_now_iso
 from app.services.alerts import evaluate_metric_thresholds
+
+pytestmark = pytest.mark.unit
 
 
 def _seed_node(db_path: Path) -> int:

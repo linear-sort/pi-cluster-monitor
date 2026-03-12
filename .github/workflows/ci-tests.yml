@@ -6,10 +6,21 @@ on:
     tags-ignore: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      full_suite:
+        description: "Run full test suite including slow tests"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "0 3 * * 1"
 
 jobs:
   dashboard-tests:
     runs-on: ubuntu-latest
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      FULL_SUITE: ${{ github.event.inputs.full_suite || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,12 +35,33 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r dashboard/requirements.txt -r dashboard/requirements-dev.txt
 
+      - name: Select test marker expression
+        id: marker
+        shell: bash
+        run: |
+          MARK_EXPR="not slow"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$FULL_SUITE" == "true" ]]; then
+            MARK_EXPR=""
+          elif [[ "$EVENT_NAME" == "schedule" ]]; then
+            MARK_EXPR=""
+          fi
+          echo "value=$MARK_EXPR" >> "$GITHUB_OUTPUT"
+
       - name: Run dashboard tests
         working-directory: dashboard
-        run: pytest -q
+        shell: bash
+        run: |
+          if [[ -n "${{ steps.marker.outputs.value }}" ]]; then
+            pytest -q -m "${{ steps.marker.outputs.value }}"
+          else
+            pytest -q
+          fi
 
   agent-tests:
     runs-on: ubuntu-latest
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      FULL_SUITE: ${{ github.event.inputs.full_suite || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,6 +76,51 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r agent/requirements.txt -r agent/requirements-dev.txt
 
+      - name: Select test marker expression
+        id: marker
+        shell: bash
+        run: |
+          MARK_EXPR="not slow"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$FULL_SUITE" == "true" ]]; then
+            MARK_EXPR=""
+          elif [[ "$EVENT_NAME" == "schedule" ]]; then
+            MARK_EXPR=""
+          fi
+          echo "value=$MARK_EXPR" >> "$GITHUB_OUTPUT"
+
       - name: Run agent tests
         working-directory: agent
-        run: pytest -q
+        shell: bash
+        run: |
+          if [[ -n "${{ steps.marker.outputs.value }}" ]]; then
+            pytest -q -m "${{ steps.marker.outputs.value }}"
+          else
+            pytest -q
+          fi
+
+  docker-build-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build dashboard image (smoke, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: dashboard/Dockerfile
+          push: false
+
+      - name: Build agent image (smoke, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agent/Dockerfile
+          push: false

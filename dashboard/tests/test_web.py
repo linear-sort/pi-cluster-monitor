@@ -3,10 +3,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.db import get_conn, utc_now_iso
 from app.main import app
+
+pytestmark = pytest.mark.integration
 
 
 def _seed_node_with_data(db_path: Path) -> int:

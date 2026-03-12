@@ -37,7 +37,7 @@ Update this document as each slice moves through development, testing, and deplo
 
 | Slice | Title | Status | Scope Summary |
 |---|---|---|---|
-| 0 | Pipeline Foundation | planned | Harden CI/CD, Docker build smoke checks, publish gating |
+| 0 | Pipeline Foundation | in_progress | Harden CI/CD, Docker build smoke checks, publish gating |
 | 1 | Automatic Auth Bootstrap | planned | Agent enrollment and auto token provisioning |
 | 2 | Connectivity Resilience | planned | Heartbeats, richer node state reasons, retry/backoff/circuit logic |
 | 3 | Transport Trust (TLS) | planned | HTTPS polling and trust verification options |
@@ -48,7 +48,7 @@ Update this document as each slice moves through development, testing, and deplo
 
 ## Slice 0 - Pipeline Foundation
 
-**Status:** `planned`  
+**Status:** `in_progress`  
 **Goal:** Ensure test-first CI and image publishing safety before major feature work.
 
 ### Deliverables
@@ -79,10 +79,22 @@ Update this document as each slice moves through development, testing, and deplo
 
 ### Checklist
 
-- [ ] Markers defined in pytest config and used in tests
-- [ ] CI test jobs updated
-- [ ] Docker build smoke job added
+- [x] Markers defined in pytest config and used in tests
+- [x] CI test jobs updated
+- [x] Docker build smoke job added
 - [ ] Publish gating validated on a tag workflow run
+
+### Latest Update
+
+- 2026-03-12
+  - Added pytest marker taxonomy (`unit`, `integration`, `slow`) in both app pytest configs.
+  - Marked existing tests as unit/integration.
+  - Updated `ci-tests.yml`:
+    - PR/push default runs `-m "not slow"`
+    - scheduled weekly full run
+    - manual full run toggle via `workflow_dispatch` input
+    - Docker build smoke checks for dashboard/agent on PRs
+  - Remaining step: validate publish gating via an actual tag-triggered run.
 
 ---
 

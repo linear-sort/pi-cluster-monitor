@@ -160,6 +160,12 @@ Workflow file: `.github/workflows/ci-tests.yml`
 - Executes:
   - dashboard test suite
   - agent test suite
+- Default CI mode runs `pytest -m "not slow"` for fast feedback.
+- Weekly scheduled runs execute full suites.
+- Manual full run:
+  - open **Actions -> CI Tests -> Run workflow**
+  - set `full_suite=true`
+- Pull requests also run Docker smoke builds (dashboard + agent, no push) to catch Dockerfile/runtime regressions early.
 
 ## Branch Protection (Recommended)
 
