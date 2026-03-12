@@ -99,3 +99,19 @@ class RevokeTokenResponse(BaseModel):
     revoked_at: datetime
     token_version: int
     status: str
+
+
+class BulkNodeUpdateRequest(BaseModel):
+    node_ids: list[int] = Field(min_length=1)
+    action: str = Field(min_length=1, max_length=40)
+    actor: str = Field(default="dashboard-operator", min_length=1, max_length=120)
+    reason: str = Field(default="bulk_update", min_length=1, max_length=200)
+    enabled: bool | None = None
+    poll_interval_seconds: int | None = None
+    role: str | None = Field(default=None, max_length=50)
+
+
+class BulkNodeUpdateResponse(BaseModel):
+    affected_count: int
+    action: str
+    status: str

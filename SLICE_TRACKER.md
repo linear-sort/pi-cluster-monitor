@@ -478,10 +478,10 @@ This reflects current behavior in code so future slices extend, not contradict, 
 ### Checklist
 
 - [x] Rotation/revocation implemented
-- [ ] Bulk ops implemented
+- [x] Bulk ops implemented
 - [ ] Webhook hardening implemented
 - [ ] Migration tests added and green
-- [ ] Security audit trail implemented and verified
+- [x] Security audit trail implemented and verified
 - [ ] Images published (GHCR)
 - [ ] Compose env tags updated
 - [ ] Post-deploy smoke validation completed
@@ -504,6 +504,13 @@ This reflects current behavior in code so future slices extend, not contradict, 
   - Local validation:
     - `dashboard: 20 passed`
     - `agent: 9 passed`
+- 2026-03-12
+  - Added bulk fleet update endpoint (`POST /api/v1/nodes/bulk-update`) for:
+    - `set_enabled`
+    - `set_poll_interval`
+    - `set_role`
+  - Added per-node audit events for each bulk mutation in `security_audit_events`.
+  - Added integration tests for successful bulk update + audit and invalid action rejection.
 
 ---
 

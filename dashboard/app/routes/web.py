@@ -15,6 +15,8 @@ from fastapi.templating import Jinja2Templates
 
 from app.db import fetch_all_dict, fetch_one_dict, get_conn, token_expiry_iso, utc_now_iso
 from app.models import (
+    BulkNodeUpdateRequest,
+    BulkNodeUpdateResponse,
     EnrollmentRequest,
     EnrollmentResponse,
     IngestMetricsRequest,
@@ -792,3 +794,74 @@ def api_revoke_node_token(request: Request, node_id: int, payload: RevokeTokenRe
         token_version=next_version,
         status="revoked",
     )
+
+
+@router.post("/api/v1/nodes/bulk-update", response_model=BulkNodeUpdateResponse)
+def api_bulk_update_nodes(request: Request, payload: BulkNodeUpdateRequest) -> BulkNodeUpdateResponse:
+    action = payload.action.strip().lower()
+    valid_actions = {"set_enabled", "set_poll_interval", "set_role"}
+    if action not in valid_actions:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported bulk action")
+
+    node_ids = sorted({int(node_id) for node_id in payload.node_ids if int(node_id) > 0})
+    if not node_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid node IDs provided")
+
+    if action == "set_enabled" and payload.enabled is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="enabled is required for set_enabled")
+    if action == "set_poll_interval" and payload.poll_interval_seconds is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="poll_interval_seconds is required for set_poll_interval",
+        )
+    if action == "set_role" and not (payload.role or "").strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role is required for set_role")
+
+    now_iso = utc_now_iso()
+    affected_count = 0
+    with get_conn(_db_path(request)) as conn:
+        placeholders = ",".join("?" for _ in node_ids)
+        rows = fetch_all_dict(conn, f"SELECT id FROM nodes WHERE id IN ({placeholders})", tuple(node_ids))
+        target_ids = sorted(int(row["id"]) for row in rows)
+        if not target_ids:
+            return BulkNodeUpdateResponse(affected_count=0, action=action, status="no_targets")
+
+        for node_id in target_ids:
+            if action == "set_enabled":
+                conn.execute(
+                    "UPDATE nodes SET enabled = ?, updated_at = ? WHERE id = ?",
+                    (1 if payload.enabled else 0, now_iso, node_id),
+                )
+                metadata = {"enabled": bool(payload.enabled)}
+            elif action == "set_poll_interval":
+                interval = max(3, int(payload.poll_interval_seconds or 10))
+                conn.execute(
+                    "UPDATE nodes SET poll_interval_seconds = ?, updated_at = ? WHERE id = ?",
+                    (interval, now_iso, node_id),
+                )
+                metadata = {"poll_interval_seconds": interval}
+            else:
+                role = str(payload.role or "").strip() or "worker"
+                conn.execute(
+                    "UPDATE nodes SET role = ?, updated_at = ? WHERE id = ?",
+                    (role, now_iso, node_id),
+                )
+                metadata = {"role": role}
+
+            conn.execute(
+                """
+                INSERT INTO security_audit_events (node_id, event_type, actor, reason, metadata_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    node_id,
+                    f"bulk_{action}",
+                    payload.actor.strip(),
+                    payload.reason.strip(),
+                    json.dumps(metadata, separators=(",", ":"), sort_keys=True),
+                    now_iso,
+                ),
+            )
+            affected_count += 1
+
+    return BulkNodeUpdateResponse(affected_count=affected_count, action=action, status="updated")

@@ -270,6 +270,7 @@ Authenticated via `Authorization: Bearer <token>`.
 - `POST /api/v1/token/refresh` (agent token rotation/refresh)
 - `POST /api/v1/ingest` (signed push ingest path)
 - `POST /api/v1/nodes/{id}/token/revoke` (revoke node credentials + audit event)
+- `POST /api/v1/nodes/bulk-update` (fleet updates: enabled flag, poll interval, role)
 
 Push ingest signature headers:
 

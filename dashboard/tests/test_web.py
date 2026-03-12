@@ -10,7 +10,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from app.db import get_conn, utc_now_iso
+from app.db import ensure_db, get_conn, utc_now_iso
 from app.main import app
 
 pytestmark = pytest.mark.integration
@@ -452,3 +452,82 @@ def test_revoke_token_blocks_refresh_and_ingest_and_records_audit(tmp_path: Path
         assert audit["event_type"] == "token_revoked"
         assert audit["actor"] == "test-suite"
         assert audit["reason"] == "rotation-test"
+
+
+def test_bulk_update_nodes_applies_action_and_writes_audit(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    ensure_db(db_path)
+
+    now_iso = utc_now_iso()
+    with get_conn(db_path) as conn:
+        id1 = int(
+            conn.execute(
+                """
+                INSERT INTO nodes (name, hostname, ip_address, token, role, poll_interval_seconds, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("pi-a", "pi-a.local", "10.0.0.21", "tok-a", "worker", 10, 1, now_iso, now_iso),
+            ).lastrowid
+        )
+        id2 = int(
+            conn.execute(
+                """
+                INSERT INTO nodes (name, hostname, ip_address, token, role, poll_interval_seconds, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("pi-b", "pi-b.local", "10.0.0.22", "tok-b", "worker", 10, 1, now_iso, now_iso),
+            ).lastrowid
+        )
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/nodes/bulk-update",
+            json={
+                "node_ids": [id1, id2],
+                "action": "set_poll_interval",
+                "poll_interval_seconds": 17,
+                "actor": "test-suite",
+                "reason": "fleet-tune",
+            },
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["status"] == "updated"
+        assert payload["affected_count"] == 2
+
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, poll_interval_seconds FROM nodes WHERE id IN (?, ?) ORDER BY id",
+            (id1, id2),
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["poll_interval_seconds"] == 17
+        assert rows[1]["poll_interval_seconds"] == 17
+
+        audits = conn.execute(
+            """
+            SELECT event_type, actor, reason
+            FROM security_audit_events
+            WHERE node_id IN (?, ?)
+            ORDER BY id ASC
+            """,
+            (id1, id2),
+        ).fetchall()
+        assert len(audits) == 2
+        assert all(a["event_type"] == "bulk_set_poll_interval" for a in audits)
+        assert all(a["actor"] == "test-suite" for a in audits)
+        assert all(a["reason"] == "fleet-tune" for a in audits)
+
+
+def test_bulk_update_nodes_rejects_invalid_action(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/nodes/bulk-update",
+            json={"node_ids": [1], "action": "invalid-action"},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Unsupported bulk action"
