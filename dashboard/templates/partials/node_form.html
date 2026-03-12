@@ -23,6 +23,14 @@
   </label>
   <label>TLS CA Path (optional) <input name="tls_ca_path" value="{{ node.tls_ca_path if node else '' }}" /></label>
   <label>TLS Cert Fingerprint SHA256 (optional) <input name="tls_fingerprint_sha256" value="{{ node.tls_fingerprint_sha256 if node else '' }}" /></label>
+  <label>
+    Collect Mode
+    <select name="collect_mode">
+      <option value="pull" {% if not node or node.collect_mode == 'pull' %}selected{% endif %}>pull</option>
+      <option value="push" {% if node and node.collect_mode == 'push' %}selected{% endif %}>push</option>
+      <option value="hybrid" {% if node and node.collect_mode == 'hybrid' %}selected{% endif %}>hybrid</option>
+    </select>
+  </label>
   <label>Poll Interval (s) <input name="poll_interval_seconds" type="number" min="3" value="{{ node.poll_interval_seconds if node else 10 }}" /></label>
   <label>
     Enabled

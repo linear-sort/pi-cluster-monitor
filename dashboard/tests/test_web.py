@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
+import json
 from pathlib import Path
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -152,6 +156,7 @@ def test_settings_save_tls_flags(tmp_path: Path) -> None:
                 "tls_verify": "false",
                 "tls_ca_path": "/etc/ssl/certs/custom-ca.pem",
                 "tls_fingerprint_sha256": "aa:bb:cc",
+                "collect_mode": "push",
                 "poll_interval_seconds": 10,
                 "enabled": "true",
             },
@@ -161,13 +166,14 @@ def test_settings_save_tls_flags(tmp_path: Path) -> None:
 
     with get_conn(db_path) as conn:
         node = conn.execute(
-            "SELECT use_tls, tls_verify, tls_ca_path, tls_fingerprint_sha256 FROM nodes WHERE hostname = 'pi-tls.local'"
+            "SELECT use_tls, tls_verify, tls_ca_path, tls_fingerprint_sha256, collect_mode FROM nodes WHERE hostname = 'pi-tls.local'"
         ).fetchone()
         assert node is not None
         assert node["use_tls"] == 1
         assert node["tls_verify"] == 0
         assert node["tls_ca_path"] == "/etc/ssl/certs/custom-ca.pem"
         assert node["tls_fingerprint_sha256"] == "aa:bb:cc"
+        assert node["collect_mode"] == "push"
 
 
 def test_agent_enrollment_creates_or_updates_node(tmp_path: Path) -> None:
@@ -276,3 +282,57 @@ def test_token_refresh_rotates_node_token(tmp_path: Path) -> None:
             headers={"Authorization": "Bearer invalid-token"},
         )
         assert bad_resp.status_code == 401
+
+
+def test_ingest_accepts_signed_payload_and_rejects_replay(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_ENROLL_SECRET"] = "enroll-secret"
+
+    with TestClient(app) as client:
+        enroll_resp = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-push.local",
+                "name": "pi-push",
+                "ip_address": "10.0.0.52",
+                "agent_port": 8001,
+                "role": "worker",
+                "poll_interval_seconds": 10,
+            },
+        )
+        assert enroll_resp.status_code == 200
+        token = enroll_resp.json()["token"]
+
+        payload = {
+            "hostname": "pi-push.local",
+            "timestamp": utc_now_iso(),
+            "cpu_percent": 10.0,
+            "memory_percent": 20.0,
+            "disk_percent": 30.0,
+            "temperature_c": 40.0,
+            "uptime_seconds": 100,
+            "load_1": 0.1,
+            "load_5": 0.2,
+            "load_15": 0.3,
+            "rx_bytes": 1000,
+            "tx_bytes": 2000,
+        }
+        payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        ts = str(int(time.time()))
+        nonce = "nonce-1"
+        signature = hmac.new(token.encode("utf-8"), f"{ts}.{nonce}.{payload_json}".encode("utf-8"), hashlib.sha256).hexdigest()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-PCM-Timestamp": ts,
+            "X-PCM-Nonce": nonce,
+            "X-PCM-Signature": signature,
+            "Content-Type": "application/json",
+        }
+        accepted = client.post("/api/v1/ingest", content=payload_json, headers=headers)
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "accepted"
+
+        replay = client.post("/api/v1/ingest", content=payload_json, headers=headers)
+        assert replay.status_code == 409

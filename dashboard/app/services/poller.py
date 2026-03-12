@@ -68,9 +68,10 @@ class PollingService:
                 conn,
                 """
                 SELECT id, ip_address, token, poll_interval_seconds, enabled, agent_port
-                       , use_tls, tls_verify, tls_ca_path, tls_fingerprint_sha256
+                       , use_tls, tls_verify, tls_ca_path, tls_fingerprint_sha256, collect_mode
                 FROM nodes
                 WHERE enabled = 1
+                  AND collect_mode IN ('pull', 'hybrid')
                 """,
             )
 
@@ -237,9 +238,9 @@ class PollingService:
             conn.execute(
                 """
                 INSERT INTO metric_samples (
-                    node_id, collected_at, cpu_percent, memory_percent, disk_percent, temperature_c,
+                    node_id, collected_at, source, cpu_percent, memory_percent, disk_percent, temperature_c,
                     uptime_seconds, load_1, load_5, load_15, rx_bytes, tx_bytes, raw_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, 'pull', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     node_id,

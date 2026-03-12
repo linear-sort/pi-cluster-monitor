@@ -16,6 +16,8 @@ class AgentSettings(BaseModel):
     enroll_retry_seconds: int = 10
     token_refresh_enabled: bool = True
     token_refresh_seconds: int = 3600
+    push_enabled: bool = False
+    push_interval_seconds: int = 10
     token_file: Path = Path("agent_token.txt")
 
 
@@ -33,5 +35,7 @@ def get_settings() -> AgentSettings:
         enroll_retry_seconds=max(3, int(os.getenv("AGENT_ENROLL_RETRY_SECONDS", "10"))),
         token_refresh_enabled=os.getenv("AGENT_TOKEN_REFRESH_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
         token_refresh_seconds=max(30, int(os.getenv("AGENT_TOKEN_REFRESH_SECONDS", "3600"))),
+        push_enabled=os.getenv("AGENT_PUSH_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+        push_interval_seconds=max(3, int(os.getenv("AGENT_PUSH_INTERVAL_SECONDS", "10"))),
         token_file=token_file,
     )

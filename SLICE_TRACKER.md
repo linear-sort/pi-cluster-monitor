@@ -92,8 +92,8 @@ Each "Latest Update" entry must include:
 | 1 | Automatic Auth Bootstrap | done | Agent enrollment and auto token provisioning |
 | 2 | Connectivity Resilience | done | Heartbeats, richer node state reasons, retry/backoff/circuit logic |
 | 3 | Transport Trust (TLS) | done | HTTPS polling and trust verification options |
-| 4 | Hybrid Push/Pull Metrics | planned | Agent push ingest path with replay protection and dedupe |
-| 5 | Ops Hardening + Fleet Controls | planned | Token rotation/revocation, bulk ops, alert/webhook hardening |
+| 4 | Hybrid Push/Pull Metrics | done | Agent push ingest path with replay protection and dedupe |
+| 5 | Ops Hardening + Fleet Controls | in_progress | Token rotation/revocation, bulk ops, alert/webhook hardening |
 
 ---
 
@@ -380,7 +380,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ## Slice 4 - Hybrid Push/Pull Metrics
 
-**Status:** `planned`  
+**Status:** `done`  
 **Goal:** Support push ingest for networks where pull polling is constrained.
 
 ### Deliverables
@@ -409,15 +409,37 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ### Checklist
 
-- [ ] Ingest API implemented
-- [ ] Replay protection implemented
-- [ ] Deduplication implemented
-- [ ] Mode toggles added
-- [ ] Signature and nonce storage/TTL strategy implemented
-- [ ] Tests added and green
-- [ ] Images published (GHCR)
-- [ ] Compose env tags updated
-- [ ] Post-deploy smoke validation completed
+- [x] Ingest API implemented
+- [x] Replay protection implemented
+- [x] Deduplication implemented
+- [x] Mode toggles added
+- [x] Signature and nonce storage/TTL strategy implemented
+- [x] Tests added and green
+- [x] Images published (GHCR)
+- [x] Compose env tags updated
+- [x] Post-deploy smoke validation completed
+
+### Latest Update
+
+- 2026-03-12
+  - Added signed ingest endpoint (`POST /api/v1/ingest`) with:
+    - bearer token validation (current/previous token grace aware),
+    - HMAC signature verification,
+    - nonce replay protection via `ingest_nonces`,
+    - timestamp freshness checks.
+  - Added push dedupe behavior on `node_id + collected_at` to avoid duplicate samples.
+  - Added `collect_mode` per node (`pull`, `push`, `hybrid`) and poller now skips pull for push-only nodes.
+  - Added agent push loop with signed payload delivery to dashboard ingest endpoint.
+  - Added dashboard + agent tests covering ingest signing/replay and push signature behavior.
+- 2026-03-12
+  - Finalized ingest signing parity by validating HMAC against raw request body bytes (prevents timestamp-format canonicalization mismatch).
+  - Confirmed local CI-equivalent suites:
+    - `dashboard: 17 passed`
+    - `agent: 9 passed`
+  - Deployment checklist reconciled:
+    - GHCR image publish complete
+    - compose tags updated
+    - post-deploy smoke validation recorded
 
 ---
 

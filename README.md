@@ -241,6 +241,8 @@ docker compose -f docker-compose.agent.dev.yml up -d --build
 - `AGENT_ENROLL_RETRY_SECONDS` (default: `10`)
 - `AGENT_TOKEN_REFRESH_ENABLED` (default: `true`)
 - `AGENT_TOKEN_REFRESH_SECONDS` (default: `3600`)
+- `AGENT_PUSH_ENABLED` (default: `false`)
+- `AGENT_PUSH_INTERVAL_SECONDS` (default: `10`)
 - `AGENT_TOKEN_FILE` (default: `agent_token.txt`)
 
 ## API Endpoints
@@ -266,6 +268,7 @@ Authenticated via `Authorization: Bearer <token>`.
 - `GET /api/v1/alerts`
 - `POST /api/v1/enroll` (agent bootstrap enrollment)
 - `POST /api/v1/token/refresh` (agent token rotation/refresh)
+- `POST /api/v1/ingest` (signed push ingest path)
 
 ## Database
 

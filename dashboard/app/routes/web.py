@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import hmac
+import json
 from pathlib import Path
 import secrets
+import sqlite3
+import time
 
 from fastapi import APIRouter, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.db import fetch_all_dict, fetch_one_dict, get_conn, token_expiry_iso, utc_now_iso
-from app.models import EnrollmentRequest, EnrollmentResponse, TokenRefreshRequest, TokenRefreshResponse
+from app.models import EnrollmentRequest, EnrollmentResponse, IngestMetricsRequest, TokenRefreshRequest, TokenRefreshResponse
 
 
 router = APIRouter()
@@ -99,6 +104,7 @@ def _cluster_nodes(conn) -> list[dict]:
         SELECT
             n.id, n.name, n.hostname, n.ip_address, n.role, n.enabled, n.last_status, n.last_seen_at,
             n.enrollment_status, n.enrolled_at, n.token_expires_at, n.use_tls, n.tls_verify, n.tls_ca_path, n.tls_fingerprint_sha256,
+            n.collect_mode,
             n.last_heartbeat_at, n.last_error_category, n.last_error_message, n.consecutive_failures,
             ms.cpu_percent, ms.memory_percent, ms.disk_percent, ms.temperature_c,
             COALESCE(ev.severity, 'info') AS alert_severity
@@ -151,6 +157,14 @@ def _is_future_iso(value: str | None) -> bool:
         return datetime.fromisoformat(value) > datetime.now(timezone.utc)
     except ValueError:
         return False
+
+
+def _validate_node_token(node: dict, token: str) -> bool:
+    if token == (node.get("token") or "") and _is_future_iso(node.get("token_expires_at")):
+        return True
+    if token == (node.get("previous_token") or "") and _is_future_iso(node.get("previous_token_expires_at")):
+        return True
+    return False
 
 
 @router.get("/", include_in_schema=False)
@@ -294,11 +308,15 @@ def save_node(
     tls_verify: str = Form(default="true"),
     tls_ca_path: str = Form(default=""),
     tls_fingerprint_sha256: str = Form(default=""),
+    collect_mode: str = Form(default="pull"),
     poll_interval_seconds: int = Form(default=10),
     enabled: str = Form(default="true"),
 ) -> RedirectResponse:
     use_tls_bool = str(use_tls).strip().lower() in {"1", "true", "yes", "on"}
     tls_verify_bool = str(tls_verify).strip().lower() in {"1", "true", "yes", "on"}
+    collect_mode_value = str(collect_mode).strip().lower()
+    if collect_mode_value not in {"pull", "push", "hybrid"}:
+        collect_mode_value = "pull"
     enabled_bool = str(enabled).strip().lower() in {"1", "true", "yes", "on"}
     now_iso = utc_now_iso()
     with get_conn(_db_path(request)) as conn:
@@ -308,7 +326,7 @@ def save_node(
                 UPDATE nodes
                 SET name=?, hostname=?, ip_address=?, token=?, role=?,
                     agent_port=?, use_tls=?, tls_verify=?, tls_ca_path=?, tls_fingerprint_sha256=?,
-                    poll_interval_seconds=?, enabled=?, updated_at=?
+                    collect_mode=?, poll_interval_seconds=?, enabled=?, updated_at=?
                 WHERE id=?
                 """,
                 (
@@ -322,6 +340,7 @@ def save_node(
                     1 if tls_verify_bool else 0,
                     tls_ca_path.strip() or None,
                     tls_fingerprint_sha256.strip() or None,
+                    collect_mode_value,
                     max(3, int(poll_interval_seconds)),
                     1 if enabled_bool else 0,
                     now_iso,
@@ -333,10 +352,11 @@ def save_node(
                 """
                 INSERT INTO nodes (
                     name, hostname, ip_address, token, role,
-                    agent_port, use_tls, tls_verify, tls_ca_path, tls_fingerprint_sha256, poll_interval_seconds, enabled,
+                    agent_port, use_tls, tls_verify, tls_ca_path, tls_fingerprint_sha256, collect_mode,
+                    poll_interval_seconds, enabled,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name.strip(),
@@ -349,6 +369,7 @@ def save_node(
                     1 if tls_verify_bool else 0,
                     tls_ca_path.strip() or None,
                     tls_fingerprint_sha256.strip() or None,
+                    collect_mode_value,
                     max(3, int(poll_interval_seconds)),
                     1 if enabled_bool else 0,
                     now_iso,
@@ -440,6 +461,126 @@ def api_alerts(request: Request, unresolved_only: bool = False, limit: int = 100
             (max(1, min(limit, 500)),),
         )
     return {"alerts": rows}
+
+
+@router.post("/api/v1/ingest")
+async def api_ingest_metrics(request: Request, payload: IngestMetricsRequest) -> dict:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+    token = auth_header.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+
+    timestamp_header = request.headers.get("X-PCM-Timestamp", "").strip()
+    nonce_header = request.headers.get("X-PCM-Nonce", "").strip()
+    signature_header = request.headers.get("X-PCM-Signature", "").strip().lower()
+    if not timestamp_header or not nonce_header or not signature_header:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing signature headers")
+
+    try:
+        ts = int(timestamp_header)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid timestamp header") from exc
+    now_ts = int(time.time())
+    if abs(now_ts - ts) > 300:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Stale timestamp")
+
+    raw_body = await request.body()
+    try:
+        body_for_signature = raw_body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request encoding") from exc
+    canonical_payload = json.dumps(payload.model_dump(mode="json"), separators=(",", ":"), sort_keys=True)
+    signed_message = f"{timestamp_header}.{nonce_header}.{body_for_signature}"
+
+    with get_conn(_db_path(request)) as conn:
+        node = fetch_one_dict(
+            conn,
+            """
+            SELECT id, token, token_expires_at, previous_token, previous_token_expires_at
+            FROM nodes
+            WHERE hostname = ?
+            LIMIT 1
+            """,
+            (payload.hostname.strip(),),
+        )
+        if not node:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
+        if not _validate_node_token(node, token):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
+        expected_sig = hmac.new(token.encode("utf-8"), signed_message.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature_header, expected_sig):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
+
+        nonce_cutoff = datetime.fromtimestamp(now_ts - 600, tz=timezone.utc).isoformat()
+        conn.execute("DELETE FROM ingest_nonces WHERE node_id = ? AND created_at < ?", (int(node["id"]), nonce_cutoff))
+        try:
+            conn.execute(
+                "INSERT INTO ingest_nonces (node_id, nonce, created_at) VALUES (?, ?, ?)",
+                (int(node["id"]), nonce_header, utc_now_iso()),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Replay nonce detected") from exc
+
+        existing = fetch_one_dict(
+            conn,
+            "SELECT id FROM metric_samples WHERE node_id = ? AND collected_at = ? LIMIT 1",
+            (int(node["id"]), payload.timestamp.isoformat()),
+        )
+        now_iso = utc_now_iso()
+        conn.execute(
+            """
+            UPDATE nodes
+            SET last_seen_at = ?, last_heartbeat_at = ?, last_status = 'online',
+                last_error_category = NULL, last_error_message = NULL, last_poll_error_at = NULL,
+                consecutive_failures = 0, updated_at = ?
+            WHERE id = ?
+            """,
+            (now_iso, now_iso, now_iso, int(node["id"])),
+        )
+        if existing:
+            return {"status": "accepted", "deduped": True}
+
+        conn.execute(
+            """
+            INSERT INTO metric_samples (
+                node_id, collected_at, source, cpu_percent, memory_percent, disk_percent, temperature_c,
+                uptime_seconds, load_1, load_5, load_15, rx_bytes, tx_bytes, raw_json
+            ) VALUES (?, ?, 'push', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(node["id"]),
+                payload.timestamp.isoformat(),
+                payload.cpu_percent,
+                payload.memory_percent,
+                payload.disk_percent,
+                payload.temperature_c,
+                payload.uptime_seconds,
+                payload.load_1,
+                payload.load_5,
+                payload.load_15,
+                payload.rx_bytes,
+                payload.tx_bytes,
+                canonical_payload,
+            ),
+        )
+
+        from app.services.alerts import evaluate_metric_thresholds, evaluate_offline_alert
+
+        evaluate_metric_thresholds(
+            conn,
+            int(node["id"]),
+            {
+                "cpu_percent": payload.cpu_percent,
+                "memory_percent": payload.memory_percent,
+                "disk_percent": payload.disk_percent,
+                "temperature_c": payload.temperature_c,
+            },
+        )
+        evaluate_offline_alert(conn, int(node["id"]), 0)
+    return {"status": "accepted", "deduped": False}
 
 
 @router.post("/api/v1/enroll", response_model=EnrollmentResponse)

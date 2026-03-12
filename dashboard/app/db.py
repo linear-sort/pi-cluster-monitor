@@ -52,6 +52,7 @@ def ensure_db(db_path: Path) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 node_id INTEGER NOT NULL,
                 collected_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'pull',
                 cpu_percent REAL NOT NULL,
                 memory_percent REAL NOT NULL,
                 disk_percent REAL NOT NULL,
@@ -97,8 +98,18 @@ def ensure_db(db_path: Path) -> None:
                 FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS ingest_nonces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id INTEGER NOT NULL,
+                nonce TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(node_id, nonce),
+                FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_metric_samples_node_time ON metric_samples(node_id, collected_at);
             CREATE INDEX IF NOT EXISTS idx_alert_events_node_time ON alert_events(node_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_ingest_nonces_node_time ON ingest_nonces(node_id, created_at);
             """
         )
         _ensure_nodes_columns(conn)
@@ -155,6 +166,15 @@ def _ensure_nodes_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE nodes ADD COLUMN tls_ca_path TEXT NULL")
     if "tls_fingerprint_sha256" not in columns:
         conn.execute("ALTER TABLE nodes ADD COLUMN tls_fingerprint_sha256 TEXT NULL")
+    if "collect_mode" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN collect_mode TEXT NOT NULL DEFAULT 'pull'")
+
+    metric_cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(metric_samples)").fetchall()
+    }
+    if "source" not in metric_cols:
+        conn.execute("ALTER TABLE metric_samples ADD COLUMN source TEXT NOT NULL DEFAULT 'pull'")
 
 
 def token_expiry_iso(ttl_seconds: int) -> str:

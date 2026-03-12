@@ -69,3 +69,18 @@ class TokenRefreshResponse(BaseModel):
     token: str
     expires_at: datetime
     status: str
+
+
+class IngestMetricsRequest(BaseModel):
+    hostname: str
+    timestamp: datetime
+    cpu_percent: float
+    memory_percent: float
+    disk_percent: float
+    temperature_c: float | None = None
+    uptime_seconds: int
+    load_1: float
+    load_5: float
+    load_15: float
+    rx_bytes: int
+    tx_bytes: int
