@@ -91,7 +91,7 @@ Each "Latest Update" entry must include:
 | 0 | Pipeline Foundation | done | Harden CI/CD, Docker build smoke checks, publish gating |
 | 1 | Automatic Auth Bootstrap | done | Agent enrollment and auto token provisioning |
 | 2 | Connectivity Resilience | done | Heartbeats, richer node state reasons, retry/backoff/circuit logic |
-| 3 | Transport Trust (TLS) | in_progress | HTTPS polling and trust verification options |
+| 3 | Transport Trust (TLS) | done | HTTPS polling and trust verification options |
 | 4 | Hybrid Push/Pull Metrics | planned | Agent push ingest path with replay protection and dedupe |
 | 5 | Ops Hardening + Fleet Controls | planned | Token rotation/revocation, bulk ops, alert/webhook hardening |
 
@@ -306,7 +306,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ## Slice 3 - Transport Trust (TLS)
 
-**Status:** `in_progress`  
+**Status:** `done`  
 **Goal:** Add optional secure transport verification for agent communication.
 
 ### Deliverables
@@ -344,9 +344,9 @@ This reflects current behavior in code so future slices extend, not contradict, 
 - [x] Trust verification behavior implemented
 - [x] TLS error classification surfaced in UI/API
 - [x] Tests added and green
-- [ ] Images published (GHCR)
-- [ ] Compose env tags updated
-- [ ] Post-deploy smoke validation completed
+- [x] Images published (GHCR)
+- [x] Compose env tags updated
+- [x] Post-deploy smoke validation completed
 
 ### Latest Update
 
@@ -368,6 +368,13 @@ This reflects current behavior in code so future slices extend, not contradict, 
   - Added fingerprint pin policy via `tls_fingerprint_sha256` (SHA256 cert pin verification).
   - Poller now classifies pin mismatches as `tls_verify_error` with explicit mismatch detail.
   - Added tests for fingerprint normalization, persistence, and mismatch behavior.
+- 2026-03-12
+  - Deployment confirmation received for `v0.3.1-slice3-trust`; CI and publish workflows completed successfully.
+  - Confirmed new functionality is covered by tests:
+    - TLS config persistence (`test_settings_save_tls_flags`)
+    - HTTPS path selection (`test_poll_node_uses_https_when_tls_enabled`)
+    - custom CA missing-path handling (`test_poll_node_missing_tls_ca_path_sets_config_error`)
+    - fingerprint normalization and mismatch handling (`test_normalize_fingerprint`, `test_poll_node_fingerprint_mismatch_sets_tls_verify_error`)
 
 ---
 
