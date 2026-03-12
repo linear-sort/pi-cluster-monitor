@@ -2,6 +2,8 @@
 
 A lightweight, self-hosted cluster monitoring system for Raspberry Pi devices on a LAN.
 
+Planning and execution tracker: see `SLICE_TRACKER.md`.
+
 ## Features
 
 - FastAPI dashboard with server-rendered Jinja2 pages
