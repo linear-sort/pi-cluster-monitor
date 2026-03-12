@@ -445,7 +445,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ## Slice 5 - Ops Hardening + Fleet Controls
 
-**Status:** `planned`  
+**Status:** `done`  
 **Goal:** Make day-2 operations safe and scalable for larger Pi fleets.
 
 ### Deliverables
@@ -479,12 +479,12 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 - [x] Rotation/revocation implemented
 - [x] Bulk ops implemented
-- [ ] Webhook hardening implemented
-- [ ] Migration tests added and green
+- [x] Webhook hardening implemented
+- [x] Migration tests added and green
 - [x] Security audit trail implemented and verified
-- [ ] Images published (GHCR)
-- [ ] Compose env tags updated
-- [ ] Post-deploy smoke validation completed
+- [x] Images published (GHCR)
+- [x] Compose env tags updated
+- [x] Post-deploy smoke validation completed
 
 ---
 
@@ -511,6 +511,18 @@ This reflects current behavior in code so future slices extend, not contradict, 
     - `set_role`
   - Added per-node audit events for each bulk mutation in `security_audit_events`.
   - Added integration tests for successful bulk update + audit and invalid action rejection.
+- 2026-03-12
+  - Added DB migration coverage (`dashboard/tests/test_db_migrations.py`) for:
+    - fresh schema creation (security + nonce tables),
+    - legacy `nodes` schema upgrade path with new Slice 5 auth-hardening columns.
+- 2026-03-12
+  - Added webhook hardening + retry visibility:
+    - `webhook_deliveries` queue table with retry state (`pending`, `failed`, `dead`, `delivered`)
+    - queue enqueue on new non-info alerts
+    - poller-based webhook dispatcher with bounded retry/backoff
+    - delivery visibility endpoint (`GET /api/v1/webhooks/deliveries`)
+  - Added webhook tests (`dashboard/tests/test_webhooks.py`) for enqueue, success delivery, and failure transitions.
+  - Updated dashboard env/compose docs and examples with webhook retry controls.
 
 ---
 

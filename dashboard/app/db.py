@@ -122,10 +122,25 @@ def ensure_db(db_path: Path) -> None:
                 FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS webhook_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_event_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT NOT NULL,
+                delivered_at TEXT NULL,
+                last_error TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(alert_event_id),
+                FOREIGN KEY(alert_event_id) REFERENCES alert_events(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_metric_samples_node_time ON metric_samples(node_id, collected_at);
             CREATE INDEX IF NOT EXISTS idx_alert_events_node_time ON alert_events(node_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_ingest_nonces_node_time ON ingest_nonces(node_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_security_audit_node_time ON security_audit_events(node_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_webhook_delivery_status_time ON webhook_deliveries(status, next_attempt_at);
             """
         )
         _ensure_nodes_columns(conn)

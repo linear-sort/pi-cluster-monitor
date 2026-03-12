@@ -476,6 +476,52 @@ def api_alerts(request: Request, unresolved_only: bool = False, limit: int = 100
     return {"alerts": rows}
 
 
+@router.get("/api/v1/webhooks/deliveries")
+def api_webhook_deliveries(request: Request, status_filter: str = "failed", limit: int = 100) -> dict:
+    allowed = {"pending", "failed", "dead", "delivered", "all"}
+    resolved_filter = status_filter.strip().lower()
+    if resolved_filter not in allowed:
+        resolved_filter = "failed"
+
+    with get_conn(_db_path(request)) as conn:
+        if resolved_filter == "all":
+            rows = fetch_all_dict(
+                conn,
+                """
+                SELECT
+                    wd.id, wd.alert_event_id, wd.status, wd.attempt_count, wd.next_attempt_at,
+                    wd.delivered_at, wd.last_error, wd.created_at, wd.updated_at,
+                    ae.node_id, ae.severity, ae.message, a.key AS alert_key, n.name AS node_name
+                FROM webhook_deliveries wd
+                JOIN alert_events ae ON ae.id = wd.alert_event_id
+                JOIN alerts a ON a.id = ae.alert_id
+                JOIN nodes n ON n.id = ae.node_id
+                ORDER BY wd.updated_at DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 500)),),
+            )
+        else:
+            rows = fetch_all_dict(
+                conn,
+                """
+                SELECT
+                    wd.id, wd.alert_event_id, wd.status, wd.attempt_count, wd.next_attempt_at,
+                    wd.delivered_at, wd.last_error, wd.created_at, wd.updated_at,
+                    ae.node_id, ae.severity, ae.message, a.key AS alert_key, n.name AS node_name
+                FROM webhook_deliveries wd
+                JOIN alert_events ae ON ae.id = wd.alert_event_id
+                JOIN alerts a ON a.id = ae.alert_id
+                JOIN nodes n ON n.id = ae.node_id
+                WHERE wd.status = ?
+                ORDER BY wd.updated_at DESC
+                LIMIT ?
+                """,
+                (resolved_filter, max(1, min(limit, 500))),
+            )
+    return {"deliveries": rows}
+
+
 @router.post("/api/v1/ingest")
 async def api_ingest_metrics(request: Request, payload: IngestMetricsRequest) -> dict:
     auth_header = request.headers.get("Authorization", "")

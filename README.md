@@ -229,6 +229,11 @@ docker compose -f docker-compose.agent.dev.yml up -d --build
 - `DASHBOARD_ALERT_RETENTION_DAYS` (default: `14`)
 - `DASHBOARD_SERVICE_RETENTION_DAYS` (default: `7`)
 - `DASHBOARD_CLEANUP_INTERVAL_SECONDS` (default: `300`)
+- `DASHBOARD_WEBHOOK_URL` (default: empty/disabled)
+- `DASHBOARD_WEBHOOK_TIMEOUT_SECONDS` (default: `3`)
+- `DASHBOARD_WEBHOOK_RETRY_BASE_SECONDS` (default: `15`)
+- `DASHBOARD_WEBHOOK_MAX_ATTEMPTS` (default: `5`)
+- `DASHBOARD_WEBHOOK_DISPATCH_INTERVAL_SECONDS` (default: `5`)
 
 ### Agent env vars
 
@@ -271,6 +276,7 @@ Authenticated via `Authorization: Bearer <token>`.
 - `POST /api/v1/ingest` (signed push ingest path)
 - `POST /api/v1/nodes/{id}/token/revoke` (revoke node credentials + audit event)
 - `POST /api/v1/nodes/bulk-update` (fleet updates: enabled flag, poll interval, role)
+- `GET /api/v1/webhooks/deliveries` (delivery visibility for pending/failed/dead/successful webhook sends)
 
 Push ingest signature headers:
 
@@ -290,6 +296,7 @@ SQLite schema is created automatically on startup with the following tables:
 - `services`
 - `ingest_nonces`
 - `security_audit_events`
+- `webhook_deliveries`
 
 ## systemd Units
 

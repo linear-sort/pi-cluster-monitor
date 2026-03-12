@@ -531,3 +531,47 @@ def test_bulk_update_nodes_rejects_invalid_action(tmp_path: Path) -> None:
         )
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Unsupported bulk action"
+
+
+def test_webhook_deliveries_api_returns_filtered_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    ensure_db(db_path)
+    now_iso = utc_now_iso()
+
+    with get_conn(db_path) as conn:
+        node_id = int(
+            conn.execute(
+                """
+                INSERT INTO nodes (name, hostname, ip_address, token, role, poll_interval_seconds, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("pi-webhook", "pi-webhook.local", "10.0.0.90", "tok", "worker", 10, 1, now_iso, now_iso),
+            ).lastrowid
+        )
+        alert_id = conn.execute("SELECT id FROM alerts WHERE key = 'cpu' LIMIT 1").fetchone()["id"]
+        alert_event_id = int(
+            conn.execute(
+                """
+                INSERT INTO alert_events (node_id, alert_id, severity, message, metric_value, created_at, resolved_at)
+                VALUES (?, ?, 'critical', 'cpu_percent=99', 99.0, ?, NULL)
+                """,
+                (node_id, alert_id, now_iso),
+            ).lastrowid
+        )
+        conn.execute(
+            """
+            INSERT INTO webhook_deliveries (
+                alert_event_id, status, attempt_count, next_attempt_at, delivered_at, last_error, created_at, updated_at
+            ) VALUES (?, 'failed', 1, ?, NULL, 'timeout', ?, ?)
+            """,
+            (alert_event_id, now_iso, now_iso, now_iso),
+        )
+
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/webhooks/deliveries?status_filter=failed&limit=10")
+        assert resp.status_code == 200
+        deliveries = resp.json()["deliveries"]
+        assert len(deliveries) == 1
+        assert deliveries[0]["status"] == "failed"
+        assert deliveries[0]["node_name"] == "pi-webhook"

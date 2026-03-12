@@ -58,6 +58,16 @@ def _upsert_alert_event(
         """,
         (node_id, alert_id, severity, message, metric_value, _utc_now_iso()),
     )
+    event_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    now_iso = _utc_now_iso()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO webhook_deliveries (
+            alert_event_id, status, attempt_count, next_attempt_at, delivered_at, last_error, created_at, updated_at
+        ) VALUES (?, 'pending', 0, ?, NULL, NULL, ?, ?)
+        """,
+        (event_id, now_iso, now_iso, now_iso),
+    )
 
 
 def evaluate_metric_thresholds(conn: sqlite3.Connection, node_id: int, metrics: dict[str, float | int | None]) -> None:

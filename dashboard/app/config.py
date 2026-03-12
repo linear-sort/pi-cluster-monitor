@@ -20,6 +20,11 @@ class Settings(BaseModel):
     alert_event_retention_days: int = 14
     service_retention_days: int = 7
     cleanup_interval_seconds: int = 300
+    webhook_url: str = ""
+    webhook_timeout_seconds: int = 3
+    webhook_retry_base_seconds: int = 15
+    webhook_max_attempts: int = 5
+    webhook_dispatch_interval_seconds: int = 5
 
 
 def get_settings() -> Settings:
@@ -41,4 +46,9 @@ def get_settings() -> Settings:
         alert_event_retention_days=int(os.getenv("DASHBOARD_ALERT_RETENTION_DAYS", "14")),
         service_retention_days=int(os.getenv("DASHBOARD_SERVICE_RETENTION_DAYS", "7")),
         cleanup_interval_seconds=int(os.getenv("DASHBOARD_CLEANUP_INTERVAL_SECONDS", "300")),
+        webhook_url=os.getenv("DASHBOARD_WEBHOOK_URL", "").strip(),
+        webhook_timeout_seconds=max(1, int(os.getenv("DASHBOARD_WEBHOOK_TIMEOUT_SECONDS", "3"))),
+        webhook_retry_base_seconds=max(3, int(os.getenv("DASHBOARD_WEBHOOK_RETRY_BASE_SECONDS", "15"))),
+        webhook_max_attempts=max(1, int(os.getenv("DASHBOARD_WEBHOOK_MAX_ATTEMPTS", "5"))),
+        webhook_dispatch_interval_seconds=max(1, int(os.getenv("DASHBOARD_WEBHOOK_DISPATCH_INTERVAL_SECONDS", "5"))),
     )

@@ -31,6 +31,11 @@ async def lifespan(app: FastAPI):
         alert_event_retention_days=settings.alert_event_retention_days,
         service_retention_days=settings.service_retention_days,
         cleanup_interval_seconds=settings.cleanup_interval_seconds,
+        webhook_url=settings.webhook_url,
+        webhook_timeout_seconds=settings.webhook_timeout_seconds,
+        webhook_retry_base_seconds=settings.webhook_retry_base_seconds,
+        webhook_max_attempts=settings.webhook_max_attempts,
+        webhook_dispatch_interval_seconds=settings.webhook_dispatch_interval_seconds,
     )
     app.state.poller.start()
 

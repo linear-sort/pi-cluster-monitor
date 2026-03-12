@@ -29,6 +29,11 @@ class PollingService:
         alert_event_retention_days: int = 14,
         service_retention_days: int = 7,
         cleanup_interval_seconds: int = 300,
+        webhook_url: str = "",
+        webhook_timeout_seconds: int = 3,
+        webhook_retry_base_seconds: int = 15,
+        webhook_max_attempts: int = 5,
+        webhook_dispatch_interval_seconds: int = 5,
     ) -> None:
         self.db_path = db_path
         self.base_tick_seconds = max(1, base_tick_seconds)
@@ -39,10 +44,16 @@ class PollingService:
         self.alert_event_retention_days = max(1, alert_event_retention_days)
         self.service_retention_days = max(1, service_retention_days)
         self.cleanup_interval_seconds = max(30, cleanup_interval_seconds)
+        self.webhook_url = webhook_url.strip()
+        self.webhook_timeout_seconds = max(1, webhook_timeout_seconds)
+        self.webhook_retry_base_seconds = max(3, webhook_retry_base_seconds)
+        self.webhook_max_attempts = max(1, webhook_max_attempts)
+        self.webhook_dispatch_interval_seconds = max(1, webhook_dispatch_interval_seconds)
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._last_poll: dict[int, float] = {}
         self._last_cleanup_epoch: float = 0.0
+        self._last_webhook_dispatch_epoch: float = 0.0
         self._node_runtime: dict[int, dict[str, float | int]] = {}
 
     def start(self) -> None:
@@ -60,6 +71,7 @@ class PollingService:
             while not self._stop_event.is_set():
                 await self._poll_due_nodes(client)
                 await self._run_retention_cleanup_if_due()
+                await self._dispatch_webhooks_if_due()
                 await asyncio.sleep(self.base_tick_seconds)
 
     async def _poll_due_nodes(self, client: httpx.AsyncClient) -> None:
@@ -357,3 +369,79 @@ class PollingService:
             conn.execute("DELETE FROM metric_samples WHERE collected_at < ?", (metric_cutoff,))
             conn.execute("DELETE FROM alert_events WHERE created_at < ? AND resolved_at IS NOT NULL", (alert_cutoff,))
             conn.execute("DELETE FROM services WHERE checked_at < ?", (service_cutoff,))
+
+    async def _dispatch_webhooks_if_due(self) -> None:
+        if not self.webhook_url:
+            return
+        now_epoch = datetime.now(timezone.utc).timestamp()
+        if now_epoch - self._last_webhook_dispatch_epoch < self.webhook_dispatch_interval_seconds:
+            return
+        self._last_webhook_dispatch_epoch = now_epoch
+
+        with get_conn(self.db_path) as conn:
+            rows = fetch_all_dict(
+                conn,
+                """
+                SELECT
+                    wd.id, wd.alert_event_id, wd.attempt_count,
+                    ae.node_id, ae.severity, ae.message, ae.metric_value, ae.created_at,
+                    a.key AS alert_key, n.name AS node_name, n.hostname AS node_hostname
+                FROM webhook_deliveries wd
+                JOIN alert_events ae ON ae.id = wd.alert_event_id
+                JOIN alerts a ON a.id = ae.alert_id
+                JOIN nodes n ON n.id = ae.node_id
+                WHERE wd.status IN ('pending', 'failed')
+                  AND wd.attempt_count < ?
+                  AND wd.next_attempt_at <= ?
+                ORDER BY wd.created_at ASC
+                LIMIT 20
+                """,
+                (self.webhook_max_attempts, utc_now_iso()),
+            )
+
+        for row in rows:
+            await self._attempt_webhook_delivery(row)
+
+    async def _attempt_webhook_delivery(self, row: dict[str, Any]) -> None:
+        payload = {
+            "alert_event_id": int(row["alert_event_id"]),
+            "node_id": int(row["node_id"]),
+            "node_name": row["node_name"],
+            "node_hostname": row["node_hostname"],
+            "alert_key": row["alert_key"],
+            "severity": row["severity"],
+            "message": row["message"],
+            "metric_value": row["metric_value"],
+            "created_at": row["created_at"],
+        }
+        delivery_id = int(row["id"])
+        attempts = int(row["attempt_count"])
+        now_iso = utc_now_iso()
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(self.webhook_timeout_seconds)) as client:
+                response = await client.post(self.webhook_url, json=payload)
+                response.raise_for_status()
+            with get_conn(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE webhook_deliveries
+                    SET status='delivered', delivered_at=?, updated_at=?, last_error=NULL
+                    WHERE id=?
+                    """,
+                    (now_iso, now_iso, delivery_id),
+                )
+        except Exception as exc:
+            next_attempts = attempts + 1
+            backoff_seconds = min(self.webhook_retry_base_seconds * (2 ** max(0, attempts)), 300)
+            next_attempt_at = (datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)).isoformat()
+            next_status = "failed" if next_attempts < self.webhook_max_attempts else "dead"
+            with get_conn(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE webhook_deliveries
+                    SET status=?, attempt_count=?, next_attempt_at=?, updated_at=?, last_error=?
+                    WHERE id=?
+                    """,
+                    (next_status, next_attempts, next_attempt_at, utc_now_iso(), str(exc)[:300], delivery_id),
+                )
