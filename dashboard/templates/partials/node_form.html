@@ -7,6 +7,20 @@
   <label>Token <input name="token" required value="{{ node.token if node else '' }}" /></label>
   <label>Role <input name="role" value="{{ node.role if node else 'worker' }}" /></label>
   <label>Agent Port <input name="agent_port" type="number" value="{{ node.agent_port if node else default_port }}" /></label>
+  <label>
+    Use TLS
+    <select name="use_tls">
+      <option value="false" {% if not node or not node.use_tls %}selected{% endif %}>false</option>
+      <option value="true" {% if node and node.use_tls %}selected{% endif %}>true</option>
+    </select>
+  </label>
+  <label>
+    Verify TLS Cert
+    <select name="tls_verify">
+      <option value="true" {% if not node or node.tls_verify %}selected{% endif %}>true</option>
+      <option value="false" {% if node and not node.tls_verify %}selected{% endif %}>false</option>
+    </select>
+  </label>
   <label>Poll Interval (s) <input name="poll_interval_seconds" type="number" min="3" value="{{ node.poll_interval_seconds if node else 10 }}" /></label>
   <label>
     Enabled

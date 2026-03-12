@@ -65,6 +65,7 @@ class PollingService:
                 conn,
                 """
                 SELECT id, ip_address, token, poll_interval_seconds, enabled, agent_port
+                       , use_tls, tls_verify
                 FROM nodes
                 WHERE enabled = 1
                 """,
@@ -94,24 +95,33 @@ class PollingService:
         ip = node["ip_address"]
         token = node["token"]
         port = int(node.get("agent_port") or 8001)
-        base_url = f"http://{ip}:{port}"
+        use_tls = bool(int(node.get("use_tls") or 0))
+        tls_verify = bool(int(node.get("tls_verify") or 1))
+        scheme = "https" if use_tls else "http"
+        base_url = f"{scheme}://{ip}:{port}"
         headers = {"Authorization": f"Bearer {token}"}
+        request_client = client
+        insecure_client: httpx.AsyncClient | None = None
+
+        if use_tls and not tls_verify:
+            insecure_client = httpx.AsyncClient(timeout=httpx.Timeout(self.timeout_seconds), verify=False)
+            request_client = insecure_client
 
         try:
-            health_response = await client.get(f"{base_url}/health", headers=headers)
+            health_response = await request_client.get(f"{base_url}/health", headers=headers)
             if health_response.status_code in (401, 403):
                 await self._record_failure(node_id, "auth_failure", "health unauthorized", reachable=True)
                 return
             health_response.raise_for_status()
 
-            response = await client.get(f"{base_url}/api/v1/metrics", headers=headers)
+            response = await request_client.get(f"{base_url}/api/v1/metrics", headers=headers)
             if response.status_code in (401, 403):
                 await self._record_failure(node_id, "auth_failure", "metrics unauthorized", reachable=True)
                 return
             response.raise_for_status()
             metrics_payload = response.json()
             metrics = AgentMetrics.model_validate(metrics_payload)
-            services_payload = await self._fetch_services(client, base_url, headers)
+            services_payload = await self._fetch_services(request_client, base_url, headers)
             await self._record_success(node_id, metrics, metrics_payload, services_payload)
         except ValidationError as exc:
             await self._record_failure(node_id, "metrics_parse_error", str(exc), reachable=True)
@@ -125,6 +135,9 @@ class PollingService:
             await self._record_failure(node_id, category, f"http_status={status_code}", reachable=True)
         except Exception as exc:
             await self._record_failure(node_id, "unknown_error", str(exc), reachable=False)
+        finally:
+            if insecure_client is not None:
+                await insecure_client.aclose()
 
     async def _fetch_services(
         self,

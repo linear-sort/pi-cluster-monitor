@@ -14,7 +14,7 @@
   <h2>Configured Nodes</h2>
   <table>
     <thead>
-      <tr><th>Name</th><th>Host</th><th>IP</th><th>Port</th><th>Role</th><th>Poll</th><th>Enroll</th><th>Token Exp</th><th>Enabled</th><th>Actions</th></tr>
+      <tr><th>Name</th><th>Host</th><th>IP</th><th>Port</th><th>TLS</th><th>Role</th><th>Poll</th><th>Enroll</th><th>Token Exp</th><th>Enabled</th><th>Actions</th></tr>
     </thead>
     <tbody>
       {% for n in nodes %}
@@ -23,6 +23,13 @@
         <td>{{ n.hostname }}</td>
         <td>{{ n.ip_address }}</td>
         <td>{{ n.agent_port }}</td>
+        <td>
+          {% if n.use_tls %}
+          <span class="badge online">https {% if n.tls_verify %}(verify){% else %}(insecure){% endif %}</span>
+          {% else %}
+          <span class="badge warning">http</span>
+          {% endif %}
+        </td>
         <td>{{ n.role }}</td>
         <td>{{ n.poll_interval_seconds }}s</td>
         <td><span class="badge {{ 'online' if n.enrollment_status == 'enrolled' else 'warning' }}">{{ n.enrollment_status }}</span></td>

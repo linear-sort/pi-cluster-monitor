@@ -133,6 +133,39 @@ def test_settings_save_enabled_false_string(tmp_path: Path) -> None:
         assert node["enabled"] == 0
 
 
+def test_settings_save_tls_flags(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_POLL_BASE_SECONDS"] = "1"
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/settings/nodes/save",
+            data={
+                "name": "pi-tls",
+                "hostname": "pi-tls.local",
+                "ip_address": "10.0.0.12",
+                "token": "token-tls",
+                "role": "worker",
+                "agent_port": 8001,
+                "use_tls": "true",
+                "tls_verify": "false",
+                "poll_interval_seconds": 10,
+                "enabled": "true",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    with get_conn(db_path) as conn:
+        node = conn.execute(
+            "SELECT use_tls, tls_verify FROM nodes WHERE hostname = 'pi-tls.local'"
+        ).fetchone()
+        assert node is not None
+        assert node["use_tls"] == 1
+        assert node["tls_verify"] == 0
+
+
 def test_agent_enrollment_creates_or_updates_node(tmp_path: Path) -> None:
     db_path = tmp_path / "cluster.db"
     os.environ["DASHBOARD_DB_PATH"] = str(db_path)

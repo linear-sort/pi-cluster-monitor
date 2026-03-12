@@ -198,3 +198,63 @@ async def test_circuit_breaker_skips_polling_while_open(monkeypatch, tmp_path: P
         await poller._poll_due_nodes(client)
 
     assert called["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_poll_node_uses_https_when_tls_enabled(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    ensure_db(db_path)
+    node_id = _seed_node(db_path)
+    poller = PollingService(db_path=db_path)
+
+    calls: list[str] = []
+
+    class FakeResp:
+        def __init__(self, status_code: int, payload: dict | None = None) -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._payload
+
+    async def fake_get(self, url: str, headers: dict[str, str] | None = None, **kwargs):  # noqa: ARG001
+        calls.append(url)
+        if url.endswith("/health"):
+            return FakeResp(200, {"status": "ok"})
+        if url.endswith("/api/v1/metrics"):
+            return FakeResp(
+                200,
+                {
+                    "hostname": "pi-1",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "cpu_percent": 1.0,
+                    "memory_percent": 2.0,
+                    "disk_percent": 3.0,
+                    "temperature_c": 30.0,
+                    "uptime_seconds": 10,
+                    "load_1": 0.1,
+                    "load_5": 0.2,
+                    "load_15": 0.3,
+                    "rx_bytes": 1,
+                    "tx_bytes": 2,
+                },
+            )
+        return FakeResp(404, {})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    node = {
+        "id": node_id,
+        "ip_address": "10.0.0.10",
+        "token": "token",
+        "agent_port": 8001,
+        "use_tls": 1,
+        "tls_verify": 1,
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(1)) as client:
+        await poller._poll_node(client, node)
+
+    assert any(url.startswith("https://10.0.0.10:8001/health") for url in calls)

@@ -80,6 +80,7 @@ docker compose -f docker-compose.dashboard.yml up -d
 ### 3) Register nodes in dashboard
 
 In **Settings**, add each Pi node IP/token and poll configuration.
+For secure transport, you can enable per-node TLS in Settings and optionally disable certificate verification for self-signed lab setups.
 
 ## Local Python Setup (Optional)
 

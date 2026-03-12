@@ -29,6 +29,8 @@ def ensure_db(db_path: Path) -> None:
                 previous_token_expires_at TEXT NULL,
                 role TEXT NOT NULL DEFAULT 'worker',
                 agent_port INTEGER NOT NULL DEFAULT 8001,
+                use_tls INTEGER NOT NULL DEFAULT 0,
+                tls_verify INTEGER NOT NULL DEFAULT 1,
                 poll_interval_seconds INTEGER NOT NULL DEFAULT 10,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 enrollment_status TEXT NOT NULL DEFAULT 'manual',
@@ -143,6 +145,10 @@ def _ensure_nodes_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE nodes ADD COLUMN last_poll_error_at TEXT NULL")
     if "consecutive_failures" not in columns:
         conn.execute("ALTER TABLE nodes ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0")
+    if "use_tls" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN use_tls INTEGER NOT NULL DEFAULT 0")
+    if "tls_verify" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN tls_verify INTEGER NOT NULL DEFAULT 1")
 
 
 def token_expiry_iso(ttl_seconds: int) -> str:

@@ -41,9 +41,9 @@ Update this document as each slice moves through development, testing, and deplo
 | Slice | Title | Status | Scope Summary |
 |---|---|---|---|
 | 0 | Pipeline Foundation | done | Harden CI/CD, Docker build smoke checks, publish gating |
-| 1 | Automatic Auth Bootstrap | in_progress | Agent enrollment and auto token provisioning |
-| 2 | Connectivity Resilience | in_progress | Heartbeats, richer node state reasons, retry/backoff/circuit logic |
-| 3 | Transport Trust (TLS) | planned | HTTPS polling and trust verification options |
+| 1 | Automatic Auth Bootstrap | done | Agent enrollment and auto token provisioning |
+| 2 | Connectivity Resilience | done | Heartbeats, richer node state reasons, retry/backoff/circuit logic |
+| 3 | Transport Trust (TLS) | in_progress | HTTPS polling and trust verification options |
 | 4 | Hybrid Push/Pull Metrics | planned | Agent push ingest path with replay protection and dedupe |
 | 5 | Ops Hardening + Fleet Controls | planned | Token rotation/revocation, bulk ops, alert/webhook hardening |
 
@@ -106,7 +106,7 @@ Update this document as each slice moves through development, testing, and deplo
 
 ## Slice 1 - Automatic Auth Bootstrap
 
-**Status:** `in_progress`  
+**Status:** `done`  
 **Goal:** Remove manual token distribution by enabling one-step agent enrollment.
 
 ### Deliverables
@@ -146,7 +146,7 @@ Update this document as each slice moves through development, testing, and deplo
 - [x] UI/API enrollment status added
 - [x] Periodic token refresh/rotation implemented
 - [x] Tests added and green
-- [ ] Deployed image tags promoted
+- [x] Deployed image tags promoted
 
 ### Latest Update
 
@@ -165,7 +165,7 @@ Update this document as each slice moves through development, testing, and deplo
 
 ## Slice 2 - Connectivity Resilience
 
-**Status:** `in_progress`  
+**Status:** `done`  
 **Goal:** Improve reliability and observability on unstable LANs.
 
 ### Deliverables
@@ -195,7 +195,7 @@ Update this document as each slice moves through development, testing, and deplo
 - [x] Poll state classification implemented
 - [x] Backoff/circuit logic implemented
 - [x] Tests added and green
-- [ ] Deployed image tags promoted
+- [x] Deployed image tags promoted
 
 ### Latest Update
 
@@ -210,7 +210,7 @@ Update this document as each slice moves through development, testing, and deplo
 
 ## Slice 3 - Transport Trust (TLS)
 
-**Status:** `planned`  
+**Status:** `in_progress`  
 **Goal:** Add optional secure transport verification for agent communication.
 
 ### Deliverables
@@ -234,11 +234,19 @@ Update this document as each slice moves through development, testing, and deplo
 
 ### Checklist
 
-- [ ] TLS options added to node config
-- [ ] HTTPS polling support implemented
-- [ ] Trust verification behavior implemented
-- [ ] Tests added and green
+- [x] TLS options added to node config
+- [x] HTTPS polling support implemented
+- [x] Trust verification behavior implemented
+- [x] Tests added and green
 - [ ] Deployed image tags promoted
+
+### Latest Update
+
+- 2026-03-12
+  - Added per-node TLS settings (`use_tls`, `tls_verify`) with DB migration support.
+  - Updated settings UI/form and save handlers to manage TLS mode per node.
+  - Poller now selects `http`/`https` per node and supports insecure TLS mode (`verify=False`) when configured.
+  - Added tests for TLS config persistence and HTTPS polling behavior; local suites passed.
 
 ---
 

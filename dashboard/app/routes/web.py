@@ -98,7 +98,7 @@ def _cluster_nodes(conn) -> list[dict]:
         """
         SELECT
             n.id, n.name, n.hostname, n.ip_address, n.role, n.enabled, n.last_status, n.last_seen_at,
-            n.enrollment_status, n.enrolled_at, n.token_expires_at,
+            n.enrollment_status, n.enrolled_at, n.token_expires_at, n.use_tls, n.tls_verify,
             n.last_heartbeat_at, n.last_error_category, n.last_error_message, n.consecutive_failures,
             ms.cpu_percent, ms.memory_percent, ms.disk_percent, ms.temperature_c,
             COALESCE(ev.severity, 'info') AS alert_severity
@@ -290,9 +290,13 @@ def save_node(
     token: str = Form(...),
     role: str = Form(default="worker"),
     agent_port: int = Form(default=8001),
+    use_tls: str = Form(default="false"),
+    tls_verify: str = Form(default="true"),
     poll_interval_seconds: int = Form(default=10),
     enabled: str = Form(default="true"),
 ) -> RedirectResponse:
+    use_tls_bool = str(use_tls).strip().lower() in {"1", "true", "yes", "on"}
+    tls_verify_bool = str(tls_verify).strip().lower() in {"1", "true", "yes", "on"}
     enabled_bool = str(enabled).strip().lower() in {"1", "true", "yes", "on"}
     now_iso = utc_now_iso()
     with get_conn(_db_path(request)) as conn:
@@ -301,7 +305,7 @@ def save_node(
                 """
                 UPDATE nodes
                 SET name=?, hostname=?, ip_address=?, token=?, role=?,
-                    agent_port=?, poll_interval_seconds=?, enabled=?, updated_at=?
+                    agent_port=?, use_tls=?, tls_verify=?, poll_interval_seconds=?, enabled=?, updated_at=?
                 WHERE id=?
                 """,
                 (
@@ -311,6 +315,8 @@ def save_node(
                     token.strip(),
                     role.strip() or "worker",
                     int(agent_port),
+                    1 if use_tls_bool else 0,
+                    1 if tls_verify_bool else 0,
                     max(3, int(poll_interval_seconds)),
                     1 if enabled_bool else 0,
                     now_iso,
@@ -322,10 +328,10 @@ def save_node(
                 """
                 INSERT INTO nodes (
                     name, hostname, ip_address, token, role,
-                    agent_port, poll_interval_seconds, enabled,
+                    agent_port, use_tls, tls_verify, poll_interval_seconds, enabled,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name.strip(),
@@ -334,6 +340,8 @@ def save_node(
                     token.strip(),
                     role.strip() or "worker",
                     int(agent_port),
+                    1 if use_tls_bool else 0,
+                    1 if tls_verify_bool else 0,
                     max(3, int(poll_interval_seconds)),
                     1 if enabled_bool else 0,
                     now_iso,
