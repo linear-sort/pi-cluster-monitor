@@ -33,6 +33,7 @@ pi-cluster-monitor/
 - Docker + Docker Compose plugin
 - Python 3.10+ (only needed for non-Docker local development/tests)
 - Linux for Raspberry Pi agent deployments
+- Security requirement: agent auth tokens must support periodic refresh/rotation (tracked in `SLICE_TRACKER.md`, Slice 1).
 
 ## Docker Quick Start (Recommended)
 
@@ -59,6 +60,7 @@ Copy the repo (or just the needed files) to each Pi, then edit `docker-compose.a
 - Set `AGENT_TOKEN` to your shared/per-node token
 - Optionally set `AGENT_NAME`
 - Optionally set `AGENT_SERVICES`
+- Set `AGENT_DASHBOARD_URL` and `AGENT_ENROLL_SECRET` to enable automatic enrollment
 
 Then run:
 
@@ -216,6 +218,9 @@ docker compose -f docker-compose.agent.dev.yml up -d --build
 - `DASHBOARD_POLL_BASE_SECONDS` (default: `2`)
 - `DASHBOARD_HTTP_TIMEOUT_SECONDS` (default: `4`)
 - `DASHBOARD_AGENT_DEFAULT_PORT` (default: `8001`)
+- `DASHBOARD_ENROLL_SECRET` (default: `changeme-enroll`)
+- `DASHBOARD_TOKEN_TTL_SECONDS` (default: `86400`)
+- `DASHBOARD_TOKEN_GRACE_SECONDS` (default: `300`)
 - `DASHBOARD_METRIC_RETENTION_HOURS` (default: `48`)
 - `DASHBOARD_ALERT_RETENTION_DAYS` (default: `14`)
 - `DASHBOARD_SERVICE_RETENTION_DAYS` (default: `7`)
@@ -226,6 +231,13 @@ docker compose -f docker-compose.agent.dev.yml up -d --build
 - `AGENT_TOKEN` (required, default: `changeme`)
 - `AGENT_NAME` (optional display name override)
 - `AGENT_SERVICES` (optional comma-separated list for `/api/v1/services`)
+- `AGENT_DASHBOARD_URL` (dashboard base URL for auto-enrollment)
+- `AGENT_ENROLL_SECRET` (must match `DASHBOARD_ENROLL_SECRET`)
+- `AGENT_ENROLL_ENABLED` (default: `true`)
+- `AGENT_ENROLL_RETRY_SECONDS` (default: `10`)
+- `AGENT_TOKEN_REFRESH_ENABLED` (default: `true`)
+- `AGENT_TOKEN_REFRESH_SECONDS` (default: `3600`)
+- `AGENT_TOKEN_FILE` (default: `agent_token.txt`)
 
 ## API Endpoints
 
@@ -248,6 +260,8 @@ Authenticated via `Authorization: Bearer <token>`.
 - `GET /api/v1/nodes/{id}`
 - `GET /api/v1/nodes/{id}/metrics`
 - `GET /api/v1/alerts`
+- `POST /api/v1/enroll` (agent bootstrap enrollment)
+- `POST /api/v1/token/refresh` (agent token rotation/refresh)
 
 ## Database
 

@@ -26,6 +26,9 @@ Update this document as each slice moves through development, testing, and deplo
   - `dashboard-tests`
   - `agent-tests`
 - Docker publish must remain gated by tests.
+- Authentication hardening requirement:
+  - agent-issued bearer tokens must have periodic refresh/rotation support
+  - refresh/rotation paths require explicit test coverage before release
 - Deployment completion requires:
   - images published (GHCR)
   - compose env tags updated
@@ -37,8 +40,8 @@ Update this document as each slice moves through development, testing, and deplo
 
 | Slice | Title | Status | Scope Summary |
 |---|---|---|---|
-| 0 | Pipeline Foundation | in_progress | Harden CI/CD, Docker build smoke checks, publish gating |
-| 1 | Automatic Auth Bootstrap | planned | Agent enrollment and auto token provisioning |
+| 0 | Pipeline Foundation | done | Harden CI/CD, Docker build smoke checks, publish gating |
+| 1 | Automatic Auth Bootstrap | in_progress | Agent enrollment and auto token provisioning |
 | 2 | Connectivity Resilience | planned | Heartbeats, richer node state reasons, retry/backoff/circuit logic |
 | 3 | Transport Trust (TLS) | planned | HTTPS polling and trust verification options |
 | 4 | Hybrid Push/Pull Metrics | planned | Agent push ingest path with replay protection and dedupe |
@@ -48,7 +51,7 @@ Update this document as each slice moves through development, testing, and deplo
 
 ## Slice 0 - Pipeline Foundation
 
-**Status:** `in_progress`  
+**Status:** `done`  
 **Goal:** Ensure test-first CI and image publishing safety before major feature work.
 
 ### Deliverables
@@ -82,7 +85,7 @@ Update this document as each slice moves through development, testing, and deplo
 - [x] Markers defined in pytest config and used in tests
 - [x] CI test jobs updated
 - [x] Docker build smoke job added
-- [ ] Publish gating validated on a tag workflow run
+- [x] Publish gating validated on a tag workflow run
 
 ### Latest Update
 
@@ -95,12 +98,15 @@ Update this document as each slice moves through development, testing, and deplo
     - manual full run toggle via `workflow_dispatch` input
     - Docker build smoke checks for dashboard/agent on PRs
   - Remaining step: validate publish gating via an actual tag-triggered run.
+- 2026-03-12
+  - Publish gating validated via tag-triggered workflow runs (`v0.0.1-slice0`, `v0.0.2-slice0-fix`).
+  - Fixed CI import resolution using app-specific `tests/conftest.py` files.
 
 ---
 
 ## Slice 1 - Automatic Auth Bootstrap
 
-**Status:** `planned`  
+**Status:** `in_progress`  
 **Goal:** Remove manual token distribution by enabling one-step agent enrollment.
 
 ### Deliverables
@@ -109,32 +115,51 @@ Update this document as each slice moves through development, testing, and deplo
 - Per-node issued token lifecycle for enrolled agents.
 - Agent enrollment flow with retry/backoff until successful.
 - Node enrollment status in dashboard UI/API.
+- Periodic agent token refresh flow (time-based renewal with overlap/grace handling).
 
 ### Tests Required
 
 - Dashboard:
   - enrollment validation and one-time semantics
   - token issuance and node linkage
+  - token refresh issuance rules and expiry enforcement
 - Agent:
   - successful enrollment stores token
   - invalid enroll secret handling
   - retry behavior on transient dashboard failure
+  - refresh-before-expiry behavior and fallback on refresh failure
 - Integration:
   - fresh agent enrolls and is polled successfully end-to-end
+  - token rollover scenario without monitoring interruption
 
 ### Deployment Gate
 
 - New auth/enrollment tests pass in CI.
 - Publish workflow blocked on those tests.
 - Deployment notes include enrollment secret rotation guidance.
+- Token refresh interval and grace-window behavior documented and validated.
 
 ### Checklist
 
-- [ ] Enrollment API + DB state implemented
-- [ ] Agent enrollment client implemented
-- [ ] UI/API enrollment status added
-- [ ] Tests added and green
+- [x] Enrollment API + DB state implemented
+- [x] Agent enrollment client implemented
+- [x] UI/API enrollment status added
+- [x] Periodic token refresh/rotation implemented
+- [x] Tests added and green
 - [ ] Deployed image tags promoted
+
+### Latest Update
+
+- 2026-03-12
+  - Added dashboard enrollment API (`POST /api/v1/enroll`) with shared secret validation and token issuance.
+  - Added node enrollment DB state (`enrollment_status`, `enrolled_at`) with backward-compatible schema migration.
+  - Added agent auto-enrollment loop with persisted token file support.
+  - Updated compose/env templates for automatic enrollment configuration.
+- 2026-03-12
+  - Added token lifecycle fields and refresh endpoint (`POST /api/v1/token/refresh`) with TTL + grace handling.
+  - Added periodic agent refresh loop and new refresh settings/env wiring.
+  - Surfaced enrollment/token expiry status in settings UI and node API listing.
+  - Added refresh + rollover tests and validated local suites (`dashboard: 9 passed`, `agent: 7 passed`).
 
 ---
 

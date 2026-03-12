@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 from typing import Any, Iterator
@@ -23,10 +23,16 @@ def ensure_db(db_path: Path) -> None:
                 hostname TEXT NOT NULL,
                 ip_address TEXT NOT NULL,
                 token TEXT NOT NULL,
+                token_issued_at TEXT NULL,
+                token_expires_at TEXT NULL,
+                previous_token TEXT NULL,
+                previous_token_expires_at TEXT NULL,
                 role TEXT NOT NULL DEFAULT 'worker',
                 agent_port INTEGER NOT NULL DEFAULT 8001,
                 poll_interval_seconds INTEGER NOT NULL DEFAULT 10,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                enrollment_status TEXT NOT NULL DEFAULT 'manual',
+                enrolled_at TEXT NULL,
                 last_seen_at TEXT NULL,
                 last_status TEXT NOT NULL DEFAULT 'unknown',
                 created_at TEXT NOT NULL,
@@ -86,6 +92,7 @@ def ensure_db(db_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_alert_events_node_time ON alert_events(node_id, created_at);
             """
         )
+        _ensure_nodes_columns(conn)
 
         defaults = [
             ("cpu", "cpu_percent", 75, 90),
@@ -102,6 +109,29 @@ def ensure_db(db_path: Path) -> None:
                 """,
                 (key, metric, warn, crit),
             )
+
+
+def _ensure_nodes_columns(conn: sqlite3.Connection) -> None:
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(nodes)").fetchall()
+    }
+    if "enrollment_status" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN enrollment_status TEXT NOT NULL DEFAULT 'manual'")
+    if "enrolled_at" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN enrolled_at TEXT NULL")
+    if "token_issued_at" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN token_issued_at TEXT NULL")
+    if "token_expires_at" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN token_expires_at TEXT NULL")
+    if "previous_token" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN previous_token TEXT NULL")
+    if "previous_token_expires_at" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN previous_token_expires_at TEXT NULL")
+
+
+def token_expiry_iso(ttl_seconds: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=max(60, ttl_seconds))).isoformat()
 
 
 @contextmanager

@@ -42,3 +42,30 @@ class ClusterStats(BaseModel):
     avg_cpu_percent: float
     hottest_node_name: Optional[str] = None
     hottest_node_temp: Optional[float] = None
+
+
+class EnrollmentRequest(BaseModel):
+    enroll_secret: str
+    hostname: str = Field(min_length=1, max_length=255)
+    name: str | None = None
+    ip_address: str | None = None
+    agent_port: int = 8001
+    role: str = Field(default="worker", max_length=50)
+    poll_interval_seconds: int = 10
+
+
+class EnrollmentResponse(BaseModel):
+    node_id: int
+    token: str
+    status: str
+
+
+class TokenRefreshRequest(BaseModel):
+    hostname: str = Field(min_length=1, max_length=255)
+
+
+class TokenRefreshResponse(BaseModel):
+    node_id: int
+    token: str
+    expires_at: datetime
+    status: str

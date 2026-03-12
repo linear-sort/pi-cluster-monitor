@@ -18,6 +18,7 @@ def _auth_header(token: str) -> dict[str, str]:
 def test_auth_required_for_health() -> None:
     with TestClient(app) as client:
         app.state.settings.token = "secret"
+        app.state.auth_token = "secret"
         response = client.get("/health")
     assert response.status_code == 401
     assert response.json()["detail"] == "Missing token"
@@ -26,6 +27,7 @@ def test_auth_required_for_health() -> None:
 def test_invalid_token_rejected() -> None:
     with TestClient(app) as client:
         app.state.settings.token = "secret"
+        app.state.auth_token = "secret"
         response = client.get("/health", headers=_auth_header("wrong"))
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid token"
@@ -55,6 +57,7 @@ def test_metrics_endpoint_returns_collected_payload(monkeypatch) -> None:
 
     with TestClient(app) as client:
         app.state.settings.token = "secret"
+        app.state.auth_token = "secret"
         app.state.settings.name = "pi-test"
         response = client.get("/api/v1/metrics", headers=_auth_header("secret"))
 
@@ -73,6 +76,7 @@ def test_services_endpoint_returns_service_status(monkeypatch) -> None:
 
     with TestClient(app) as client:
         app.state.settings.token = "secret"
+        app.state.auth_token = "secret"
         app.state.settings.name = "pi-test"
         app.state.settings.services = ["ssh", "cron"]
         response = client.get("/api/v1/services", headers=_auth_header("secret"))

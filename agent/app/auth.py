@@ -9,7 +9,7 @@ def verify_token(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
 
     token = auth_header.removeprefix("Bearer " ).strip()
-    expected = request.app.state.settings.token
+    expected = getattr(request.app.state, "auth_token", request.app.state.settings.token)
     if token != expected:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 

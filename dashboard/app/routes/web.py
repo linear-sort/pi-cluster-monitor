@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import secrets
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.db import fetch_all_dict, fetch_one_dict, get_conn, utc_now_iso
+from app.db import fetch_all_dict, fetch_one_dict, get_conn, token_expiry_iso, utc_now_iso
+from app.models import EnrollmentRequest, EnrollmentResponse, TokenRefreshRequest, TokenRefreshResponse
 
 
 router = APIRouter()
@@ -96,6 +98,7 @@ def _cluster_nodes(conn) -> list[dict]:
         """
         SELECT
             n.id, n.name, n.hostname, n.ip_address, n.role, n.enabled, n.last_status, n.last_seen_at,
+            n.enrollment_status, n.enrolled_at, n.token_expires_at,
             ms.cpu_percent, ms.memory_percent, ms.disk_percent, ms.temperature_c,
             COALESCE(ev.severity, 'info') AS alert_severity
         FROM nodes n
@@ -138,6 +141,15 @@ def _node_services(conn, node_id: int) -> list[dict]:
         """,
         (node_id, node_id),
     )
+
+
+def _is_future_iso(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        return datetime.fromisoformat(value) > datetime.now(timezone.utc)
+    except ValueError:
+        return False
 
 
 @router.get("/", include_in_schema=False)
@@ -412,3 +424,138 @@ def api_alerts(request: Request, unresolved_only: bool = False, limit: int = 100
             (max(1, min(limit, 500)),),
         )
     return {"alerts": rows}
+
+
+@router.post("/api/v1/enroll", response_model=EnrollmentResponse)
+def api_agent_enroll(request: Request, payload: EnrollmentRequest) -> EnrollmentResponse:
+    expected_secret = request.app.state.settings.enroll_secret
+    if payload.enroll_secret != expected_secret:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid enrollment secret")
+
+    issued_token = secrets.token_urlsafe(32)
+    now_iso = utc_now_iso()
+    expires_at_iso = token_expiry_iso(request.app.state.settings.token_ttl_seconds)
+    resolved_ip = payload.ip_address or (request.client.host if request.client else "unknown")
+    resolved_name = (payload.name or payload.hostname).strip()
+
+    with get_conn(_db_path(request)) as conn:
+        existing = fetch_one_dict(
+            conn,
+            """
+            SELECT id
+            FROM nodes
+            WHERE hostname = ? OR ip_address = ?
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (payload.hostname.strip(), resolved_ip),
+        )
+        if existing:
+            node_id = int(existing["id"])
+            conn.execute(
+                """
+                UPDATE nodes
+                SET name = ?, hostname = ?, ip_address = ?, token = ?, role = ?, agent_port = ?,
+                    poll_interval_seconds = ?, enabled = 1, enrollment_status = 'enrolled',
+                    enrolled_at = ?, token_issued_at = ?, token_expires_at = ?,
+                    previous_token = NULL, previous_token_expires_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    resolved_name,
+                    payload.hostname.strip(),
+                    resolved_ip,
+                    issued_token,
+                    payload.role.strip() or "worker",
+                    int(payload.agent_port),
+                    max(3, int(payload.poll_interval_seconds)),
+                    now_iso,
+                    now_iso,
+                    expires_at_iso,
+                    now_iso,
+                    node_id,
+                ),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                INSERT INTO nodes (
+                    name, hostname, ip_address, token, role, agent_port, poll_interval_seconds,
+                    enabled, enrollment_status, enrolled_at, token_issued_at, token_expires_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'enrolled', ?, ?, ?, ?, ?)
+                """,
+                (
+                    resolved_name,
+                    payload.hostname.strip(),
+                    resolved_ip,
+                    issued_token,
+                    payload.role.strip() or "worker",
+                    int(payload.agent_port),
+                    max(3, int(payload.poll_interval_seconds)),
+                    now_iso,
+                    now_iso,
+                    expires_at_iso,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            node_id = int(cursor.lastrowid)
+
+    return EnrollmentResponse(node_id=node_id, token=issued_token, status="enrolled")
+
+
+@router.post("/api/v1/token/refresh", response_model=TokenRefreshResponse)
+def api_token_refresh(request: Request, payload: TokenRefreshRequest) -> TokenRefreshResponse:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+    presented_token = auth_header.removeprefix("Bearer ").strip()
+    if not presented_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+
+    with get_conn(_db_path(request)) as conn:
+        node = fetch_one_dict(
+            conn,
+            """
+            SELECT id, token, token_expires_at, previous_token, previous_token_expires_at
+            FROM nodes
+            WHERE hostname = ?
+            LIMIT 1
+            """,
+            (payload.hostname.strip(),),
+        )
+        if not node:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
+
+        is_current = presented_token == (node.get("token") or "")
+        is_previous = presented_token == (node.get("previous_token") or "") and _is_future_iso(node.get("previous_token_expires_at"))
+        current_valid = is_current and _is_future_iso(node.get("token_expires_at"))
+        if not (current_valid or is_previous):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
+        new_token = secrets.token_urlsafe(32)
+        now_iso = utc_now_iso()
+        expires_at_iso = token_expiry_iso(request.app.state.settings.token_ttl_seconds)
+        previous_expires_at_iso = token_expiry_iso(request.app.state.settings.token_grace_seconds)
+        conn.execute(
+            """
+            UPDATE nodes
+            SET previous_token = token,
+                previous_token_expires_at = ?,
+                token = ?,
+                token_issued_at = ?,
+                token_expires_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (previous_expires_at_iso, new_token, now_iso, expires_at_iso, now_iso, int(node["id"])),
+        )
+
+    return TokenRefreshResponse(
+        node_id=int(node["id"]),
+        token=new_token,
+        expires_at=datetime.fromisoformat(expires_at_iso),
+        status="refreshed",
+    )

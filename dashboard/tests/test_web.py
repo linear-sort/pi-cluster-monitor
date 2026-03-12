@@ -131,3 +131,111 @@ def test_settings_save_enabled_false_string(tmp_path: Path) -> None:
         node = conn.execute("SELECT enabled FROM nodes WHERE name = 'pi-2'").fetchone()
         assert node is not None
         assert node["enabled"] == 0
+
+
+def test_agent_enrollment_creates_or_updates_node(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_ENROLL_SECRET"] = "enroll-secret"
+
+    with TestClient(app) as client:
+        create_resp = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-auto.local",
+                "name": "pi-auto",
+                "ip_address": "10.0.0.50",
+                "agent_port": 8001,
+                "role": "worker",
+                "poll_interval_seconds": 10,
+            },
+        )
+        assert create_resp.status_code == 200
+        create_payload = create_resp.json()
+        assert create_payload["status"] == "enrolled"
+        assert create_payload["token"]
+
+        update_resp = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-auto.local",
+                "name": "pi-auto-renamed",
+                "ip_address": "10.0.0.50",
+                "agent_port": 8001,
+                "role": "worker",
+                "poll_interval_seconds": 15,
+            },
+        )
+        assert update_resp.status_code == 200
+        update_payload = update_resp.json()
+        assert update_payload["node_id"] == create_payload["node_id"]
+        assert update_payload["token"] != create_payload["token"]
+
+        bad_resp = client.post(
+            "/api/v1/enroll",
+            json={"enroll_secret": "bad", "hostname": "pi-bad"},
+        )
+        assert bad_resp.status_code == 401
+
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT name, enrollment_status, enrolled_at, poll_interval_seconds FROM nodes WHERE hostname = ?",
+            ("pi-auto.local",),
+        ).fetchone()
+        assert row is not None
+        assert row["name"] == "pi-auto-renamed"
+        assert row["enrollment_status"] == "enrolled"
+        assert row["enrolled_at"] is not None
+        assert row["poll_interval_seconds"] == 15
+
+
+def test_token_refresh_rotates_node_token(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_ENROLL_SECRET"] = "enroll-secret"
+    os.environ["DASHBOARD_TOKEN_TTL_SECONDS"] = "3600"
+    os.environ["DASHBOARD_TOKEN_GRACE_SECONDS"] = "120"
+
+    with TestClient(app) as client:
+        enroll_resp = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-refresh.local",
+                "name": "pi-refresh",
+                "ip_address": "10.0.0.51",
+                "agent_port": 8001,
+                "role": "worker",
+                "poll_interval_seconds": 10,
+            },
+        )
+        assert enroll_resp.status_code == 200
+        old_token = enroll_resp.json()["token"]
+
+        refresh_resp = client.post(
+            "/api/v1/token/refresh",
+            json={"hostname": "pi-refresh.local"},
+            headers={"Authorization": f"Bearer {old_token}"},
+        )
+        assert refresh_resp.status_code == 200
+        payload = refresh_resp.json()
+        assert payload["status"] == "refreshed"
+        assert payload["token"] != old_token
+        assert payload["expires_at"]
+
+        # Old token should still be accepted briefly via grace window.
+        grace_resp = client.post(
+            "/api/v1/token/refresh",
+            json={"hostname": "pi-refresh.local"},
+            headers={"Authorization": f"Bearer {old_token}"},
+        )
+        assert grace_resp.status_code == 200
+
+        bad_resp = client.post(
+            "/api/v1/token/refresh",
+            json={"hostname": "pi-refresh.local"},
+            headers={"Authorization": "Bearer invalid-token"},
+        )
+        assert bad_resp.status_code == 401
