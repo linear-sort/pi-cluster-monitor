@@ -202,6 +202,36 @@ async def test_circuit_breaker_skips_polling_while_open(monkeypatch, tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_poll_due_nodes_marks_revoked_node_auth_failure(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    ensure_db(db_path)
+    node_id = _seed_node(db_path)
+    with get_conn(db_path) as conn:
+        conn.execute("UPDATE nodes SET revoked_at = ?, revoked_reason = ? WHERE id = ?", (utc_now_iso(), "test", node_id))
+
+    poller = PollingService(db_path=db_path)
+    called = {"count": 0}
+
+    async def fake_poll_node(client: httpx.AsyncClient, node: dict):  # noqa: ARG001
+        called["count"] += 1
+
+    monkeypatch.setattr(poller, "_poll_node", fake_poll_node)
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(1)) as client:
+        await poller._poll_due_nodes(client)
+
+    assert called["count"] == 0
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT last_error_category, last_error_message FROM nodes WHERE id = ?",
+            (node_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["last_error_category"] == "auth_failure"
+        assert "token revoked" in row["last_error_message"]
+
+
+@pytest.mark.asyncio
 async def test_poll_node_uses_https_when_tls_enabled(monkeypatch, tmp_path: Path) -> None:
     db_path = tmp_path / "cluster.db"
     ensure_db(db_path)

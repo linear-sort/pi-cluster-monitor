@@ -14,7 +14,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.db import fetch_all_dict, fetch_one_dict, get_conn, token_expiry_iso, utc_now_iso
-from app.models import EnrollmentRequest, EnrollmentResponse, IngestMetricsRequest, TokenRefreshRequest, TokenRefreshResponse
+from app.models import (
+    EnrollmentRequest,
+    EnrollmentResponse,
+    IngestMetricsRequest,
+    RevokeTokenRequest,
+    RevokeTokenResponse,
+    TokenRefreshRequest,
+    TokenRefreshResponse,
+)
 
 
 router = APIRouter()
@@ -103,7 +111,8 @@ def _cluster_nodes(conn) -> list[dict]:
         """
         SELECT
             n.id, n.name, n.hostname, n.ip_address, n.role, n.enabled, n.last_status, n.last_seen_at,
-            n.enrollment_status, n.enrolled_at, n.token_expires_at, n.use_tls, n.tls_verify, n.tls_ca_path, n.tls_fingerprint_sha256,
+            n.enrollment_status, n.enrolled_at, n.token_expires_at, n.token_version, n.revoked_at, n.revoked_reason,
+            n.use_tls, n.tls_verify, n.tls_ca_path, n.tls_fingerprint_sha256,
             n.collect_mode,
             n.last_heartbeat_at, n.last_error_category, n.last_error_message, n.consecutive_failures,
             ms.cpu_percent, ms.memory_percent, ms.disk_percent, ms.temperature_c,
@@ -160,6 +169,8 @@ def _is_future_iso(value: str | None) -> bool:
 
 
 def _validate_node_token(node: dict, token: str) -> bool:
+    if node.get("revoked_at"):
+        return False
     if token == (node.get("token") or "") and _is_future_iso(node.get("token_expires_at")):
         return True
     if token == (node.get("previous_token") or "") and _is_future_iso(node.get("previous_token_expires_at")):
@@ -475,6 +486,7 @@ async def api_ingest_metrics(request: Request, payload: IngestMetricsRequest) ->
     timestamp_header = request.headers.get("X-PCM-Timestamp", "").strip()
     nonce_header = request.headers.get("X-PCM-Nonce", "").strip()
     signature_header = request.headers.get("X-PCM-Signature", "").strip().lower()
+    token_version_header = request.headers.get("X-PCM-Token-Version", "").strip()
     if not timestamp_header or not nonce_header or not signature_header:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing signature headers")
 
@@ -498,7 +510,7 @@ async def api_ingest_metrics(request: Request, payload: IngestMetricsRequest) ->
         node = fetch_one_dict(
             conn,
             """
-            SELECT id, token, token_expires_at, previous_token, previous_token_expires_at
+            SELECT id, token, token_expires_at, previous_token, previous_token_expires_at, token_version, revoked_at
             FROM nodes
             WHERE hostname = ?
             LIMIT 1
@@ -509,6 +521,13 @@ async def api_ingest_metrics(request: Request, payload: IngestMetricsRequest) ->
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
         if not _validate_node_token(node, token):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+        if token_version_header:
+            try:
+                presented_version = int(token_version_header)
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token version header") from exc
+            if int(node.get("token_version") or 1) != presented_version:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token version mismatch")
 
         expected_sig = hmac.new(token.encode("utf-8"), signed_message.encode("utf-8"), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature_header, expected_sig):
@@ -616,6 +635,8 @@ def api_agent_enroll(request: Request, payload: EnrollmentRequest) -> Enrollment
                     poll_interval_seconds = ?, enabled = 1, enrollment_status = 'enrolled',
                     enrolled_at = ?, token_issued_at = ?, token_expires_at = ?,
                     previous_token = NULL, previous_token_expires_at = NULL,
+                    token_version = CASE WHEN token_version IS NULL THEN 1 ELSE token_version + 1 END,
+                    revoked_at = NULL, revoked_reason = NULL, revoked_by = NULL,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -660,7 +681,11 @@ def api_agent_enroll(request: Request, payload: EnrollmentRequest) -> Enrollment
             )
             node_id = int(cursor.lastrowid)
 
-    return EnrollmentResponse(node_id=node_id, token=issued_token, status="enrolled")
+    with get_conn(_db_path(request)) as conn:
+        token_version = int(
+            fetch_one_dict(conn, "SELECT token_version FROM nodes WHERE id = ? LIMIT 1", (node_id,))["token_version"]
+        )
+    return EnrollmentResponse(node_id=node_id, token=issued_token, token_version=token_version, status="enrolled")
 
 
 @router.post("/api/v1/token/refresh", response_model=TokenRefreshResponse)
@@ -676,7 +701,7 @@ def api_token_refresh(request: Request, payload: TokenRefreshRequest) -> TokenRe
         node = fetch_one_dict(
             conn,
             """
-            SELECT id, token, token_expires_at, previous_token, previous_token_expires_at
+            SELECT id, token, token_expires_at, previous_token, previous_token_expires_at, token_version, revoked_at
             FROM nodes
             WHERE hostname = ?
             LIMIT 1
@@ -685,6 +710,10 @@ def api_token_refresh(request: Request, payload: TokenRefreshRequest) -> TokenRe
         )
         if not node:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
+        if node.get("revoked_at"):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
+        if payload.token_version is not None and int(node.get("token_version") or 1) != int(payload.token_version):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token version mismatch")
 
         is_current = presented_token == (node.get("token") or "")
         is_previous = presented_token == (node.get("previous_token") or "") and _is_future_iso(node.get("previous_token_expires_at"))
@@ -713,6 +742,53 @@ def api_token_refresh(request: Request, payload: TokenRefreshRequest) -> TokenRe
     return TokenRefreshResponse(
         node_id=int(node["id"]),
         token=new_token,
+        token_version=int(node.get("token_version") or 1),
         expires_at=datetime.fromisoformat(expires_at_iso),
         status="refreshed",
+    )
+
+
+@router.post("/api/v1/nodes/{node_id}/token/revoke", response_model=RevokeTokenResponse)
+def api_revoke_node_token(request: Request, node_id: int, payload: RevokeTokenRequest) -> RevokeTokenResponse:
+    now_iso = utc_now_iso()
+    with get_conn(_db_path(request)) as conn:
+        existing = fetch_one_dict(conn, "SELECT id, token_version FROM nodes WHERE id = ? LIMIT 1", (node_id,))
+        if not existing:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
+        next_version = int(existing.get("token_version") or 1) + 1
+        conn.execute(
+            """
+            UPDATE nodes
+            SET token = '',
+                token_issued_at = NULL,
+                token_expires_at = ?,
+                previous_token = NULL,
+                previous_token_expires_at = ?,
+                token_version = ?,
+                revoked_at = ?,
+                revoked_reason = ?,
+                revoked_by = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now_iso, now_iso, next_version, now_iso, payload.reason.strip(), payload.actor.strip(), now_iso, node_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO security_audit_events (node_id, event_type, actor, reason, metadata_json, created_at)
+            VALUES (?, 'token_revoked', ?, ?, ?, ?)
+            """,
+            (
+                node_id,
+                payload.actor.strip(),
+                payload.reason.strip(),
+                json.dumps({"token_version": next_version}, separators=(",", ":"), sort_keys=True),
+                now_iso,
+            ),
+        )
+    return RevokeTokenResponse(
+        node_id=node_id,
+        revoked_at=datetime.fromisoformat(now_iso),
+        token_version=next_version,
+        status="revoked",
     )

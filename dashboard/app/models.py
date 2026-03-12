@@ -57,16 +57,19 @@ class EnrollmentRequest(BaseModel):
 class EnrollmentResponse(BaseModel):
     node_id: int
     token: str
+    token_version: int
     status: str
 
 
 class TokenRefreshRequest(BaseModel):
     hostname: str = Field(min_length=1, max_length=255)
+    token_version: int | None = None
 
 
 class TokenRefreshResponse(BaseModel):
     node_id: int
     token: str
+    token_version: int
     expires_at: datetime
     status: str
 
@@ -84,3 +87,15 @@ class IngestMetricsRequest(BaseModel):
     load_15: float
     rx_bytes: int
     tx_bytes: int
+
+
+class RevokeTokenRequest(BaseModel):
+    actor: str = Field(default="dashboard-operator", min_length=1, max_length=120)
+    reason: str = Field(default="manual_revoke", min_length=1, max_length=200)
+
+
+class RevokeTokenResponse(BaseModel):
+    node_id: int
+    revoked_at: datetime
+    token_version: int
+    status: str

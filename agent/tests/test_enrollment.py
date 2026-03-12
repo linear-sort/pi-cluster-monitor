@@ -40,11 +40,11 @@ async def test_enrollment_loop_sets_runtime_and_persisted_token(monkeypatch, tmp
     saved = {"token": None}
     token_saved_event = asyncio.Event()
 
-    async def fake_enroll_once(settings: AgentSettings, ip_address: str | None = None) -> str | None:  # noqa: ARG001
+    async def fake_enroll_once(settings: AgentSettings, ip_address: str | None = None) -> tuple[str | None, int | None]:  # noqa: ARG001
         attempts["count"] += 1
         if attempts["count"] == 1:
             raise RuntimeError("temporary")
-        return "issued-token"
+        return "issued-token", 3
 
     original_sleep = asyncio.sleep
     monkeypatch.setattr("app.enrollment.enroll_once", fake_enroll_once)
@@ -61,6 +61,7 @@ async def test_enrollment_loop_sets_runtime_and_persisted_token(monkeypatch, tmp
         await task
 
     assert app.state.auth_token == "issued-token"
+    assert app.state.token_version == 3
     assert saved["token"] == "issued-token"
     assert attempts["count"] >= 2
 
@@ -82,10 +83,12 @@ async def test_enrollment_loop_refreshes_existing_token(monkeypatch, tmp_path: P
     )
     app = SimpleNamespace(state=SimpleNamespace(settings=settings, auth_token="old-token"))
 
-    async def fake_refresh_once(settings: AgentSettings, token: str) -> str | None:  # noqa: ARG001
+    async def fake_refresh_once(
+        settings: AgentSettings, token: str, token_version: int | None = None
+    ) -> tuple[str | None, int | None]:  # noqa: ARG001
         if token == "old-token":
-            return "new-token"
-        return token
+            return "new-token", 4
+        return token, token_version
 
     original_sleep = asyncio.sleep
     monkeypatch.setattr("app.enrollment.refresh_once", fake_refresh_once)
@@ -98,4 +101,5 @@ async def test_enrollment_loop_refreshes_existing_token(monkeypatch, tmp_path: P
         await task
 
     assert app.state.auth_token == "new-token"
+    assert app.state.token_version == 4
     assert load_token_from_file(token_file) == "new-token"

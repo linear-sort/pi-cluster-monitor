@@ -20,6 +20,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     app.state.settings = settings
     app.state.auth_token = load_token_from_file(settings.token_file) or settings.token
+    app.state.token_version = 1
     app.state.enrollment_task = None
     app.state.push_task = None
 

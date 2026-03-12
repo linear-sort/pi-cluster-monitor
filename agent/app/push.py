@@ -20,7 +20,7 @@ def build_ingest_signature(token: str, timestamp: str, nonce: str, payload_json:
     return hmac.new(token.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-async def push_once(settings: AgentSettings, token: str) -> dict:
+async def push_once(settings: AgentSettings, token: str, token_version: int = 1) -> dict:
     metrics = collect_metrics(agent_name=settings.name)
     payload = metrics.model_dump(mode="json")
     payload["hostname"] = settings.name or socket.gethostname()
@@ -33,6 +33,7 @@ async def push_once(settings: AgentSettings, token: str) -> dict:
         "X-PCM-Timestamp": timestamp,
         "X-PCM-Nonce": nonce,
         "X-PCM-Signature": signature,
+        "X-PCM-Token-Version": str(max(1, int(token_version))),
     }
     timeout = httpx.Timeout(5.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -50,8 +51,9 @@ async def push_loop(app) -> None:
     while True:
         try:
             token = str(getattr(app.state, "auth_token", "") or "").strip()
+            token_version = int(getattr(app.state, "token_version", 1) or 1)
             if settings.push_enabled and settings.dashboard_url and token:
-                await push_once(settings=settings, token=token)
+                await push_once(settings=settings, token=token, token_version=token_version)
         except asyncio.CancelledError:
             raise
         except Exception:

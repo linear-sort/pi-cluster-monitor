@@ -266,6 +266,7 @@ def test_token_refresh_rotates_node_token(tmp_path: Path) -> None:
         payload = refresh_resp.json()
         assert payload["status"] == "refreshed"
         assert payload["token"] != old_token
+        assert int(payload["token_version"]) >= 1
         assert payload["expires_at"]
 
         # Old token should still be accepted briefly via grace window.
@@ -282,6 +283,34 @@ def test_token_refresh_rotates_node_token(tmp_path: Path) -> None:
             headers={"Authorization": "Bearer invalid-token"},
         )
         assert bad_resp.status_code == 401
+
+
+def test_token_refresh_rejects_version_mismatch(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_ENROLL_SECRET"] = "enroll-secret"
+
+    with TestClient(app) as client:
+        enroll_resp = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-version.local",
+                "name": "pi-version",
+                "ip_address": "10.0.0.60",
+            },
+        )
+        assert enroll_resp.status_code == 200
+        token = enroll_resp.json()["token"]
+        token_version = int(enroll_resp.json()["token_version"])
+
+        refresh_resp = client.post(
+            "/api/v1/token/refresh",
+            json={"hostname": "pi-version.local", "token_version": token_version + 1},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert refresh_resp.status_code == 401
+        assert refresh_resp.json()["detail"] == "Token version mismatch"
 
 
 def test_ingest_accepts_signed_payload_and_rejects_replay(tmp_path: Path) -> None:
@@ -336,3 +365,90 @@ def test_ingest_accepts_signed_payload_and_rejects_replay(tmp_path: Path) -> Non
 
         replay = client.post("/api/v1/ingest", content=payload_json, headers=headers)
         assert replay.status_code == 409
+
+
+def test_revoke_token_blocks_refresh_and_ingest_and_records_audit(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_ENROLL_SECRET"] = "enroll-secret"
+
+    with TestClient(app) as client:
+        enroll_resp = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-revoke.local",
+                "name": "pi-revoke",
+                "ip_address": "10.0.0.61",
+            },
+        )
+        assert enroll_resp.status_code == 200
+        token = enroll_resp.json()["token"]
+        token_version = int(enroll_resp.json()["token_version"])
+        node_id = int(enroll_resp.json()["node_id"])
+
+        revoke_resp = client.post(
+            f"/api/v1/nodes/{node_id}/token/revoke",
+            json={"actor": "test-suite", "reason": "rotation-test"},
+        )
+        assert revoke_resp.status_code == 200
+        revoked_payload = revoke_resp.json()
+        assert revoked_payload["status"] == "revoked"
+        assert int(revoked_payload["token_version"]) == token_version + 1
+
+        refresh_resp = client.post(
+            "/api/v1/token/refresh",
+            json={"hostname": "pi-revoke.local", "token_version": token_version},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert refresh_resp.status_code == 401
+        assert refresh_resp.json()["detail"] == "Token revoked"
+
+        payload = {
+            "hostname": "pi-revoke.local",
+            "timestamp": utc_now_iso(),
+            "cpu_percent": 10.0,
+            "memory_percent": 20.0,
+            "disk_percent": 30.0,
+            "temperature_c": 40.0,
+            "uptime_seconds": 100,
+            "load_1": 0.1,
+            "load_5": 0.2,
+            "load_15": 0.3,
+            "rx_bytes": 1000,
+            "tx_bytes": 2000,
+        }
+        payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        ts = str(int(time.time()))
+        nonce = "nonce-revoked"
+        signature = hmac.new(token.encode("utf-8"), f"{ts}.{nonce}.{payload_json}".encode("utf-8"), hashlib.sha256).hexdigest()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-PCM-Timestamp": ts,
+            "X-PCM-Nonce": nonce,
+            "X-PCM-Signature": signature,
+            "X-PCM-Token-Version": str(token_version),
+            "Content-Type": "application/json",
+        }
+        ingest_resp = client.post("/api/v1/ingest", content=payload_json, headers=headers)
+        assert ingest_resp.status_code == 401
+
+    with get_conn(db_path) as conn:
+        node = conn.execute(
+            "SELECT token, revoked_at, revoked_reason, revoked_by FROM nodes WHERE id = ?",
+            (node_id,),
+        ).fetchone()
+        assert node is not None
+        assert node["token"] == ""
+        assert node["revoked_at"] is not None
+        assert node["revoked_reason"] == "rotation-test"
+        assert node["revoked_by"] == "test-suite"
+
+        audit = conn.execute(
+            "SELECT event_type, actor, reason FROM security_audit_events WHERE node_id = ? ORDER BY id DESC LIMIT 1",
+            (node_id,),
+        ).fetchone()
+        assert audit is not None
+        assert audit["event_type"] == "token_revoked"
+        assert audit["actor"] == "test-suite"
+        assert audit["reason"] == "rotation-test"

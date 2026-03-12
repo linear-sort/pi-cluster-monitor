@@ -67,7 +67,7 @@ class PollingService:
             nodes = fetch_all_dict(
                 conn,
                 """
-                SELECT id, ip_address, token, poll_interval_seconds, enabled, agent_port
+                SELECT id, ip_address, token, poll_interval_seconds, enabled, agent_port, revoked_at
                        , use_tls, tls_verify, tls_ca_path, tls_fingerprint_sha256, collect_mode
                 FROM nodes
                 WHERE enabled = 1
@@ -89,6 +89,16 @@ class PollingService:
             if now_epoch - last_polled < poll_interval:
                 continue
             self._last_poll[node_id] = now_epoch
+            if node.get("revoked_at"):
+                tasks.append(
+                    self._record_failure(
+                        node_id=node_id,
+                        category="auth_failure",
+                        message="token revoked",
+                        reachable=True,
+                    )
+                )
+                continue
             tasks.append(self._poll_node(client, node))
 
         if tasks:

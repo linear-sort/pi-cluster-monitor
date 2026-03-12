@@ -269,6 +269,14 @@ Authenticated via `Authorization: Bearer <token>`.
 - `POST /api/v1/enroll` (agent bootstrap enrollment)
 - `POST /api/v1/token/refresh` (agent token rotation/refresh)
 - `POST /api/v1/ingest` (signed push ingest path)
+- `POST /api/v1/nodes/{id}/token/revoke` (revoke node credentials + audit event)
+
+Push ingest signature headers:
+
+- `X-PCM-Timestamp`
+- `X-PCM-Nonce`
+- `X-PCM-Signature`
+- `X-PCM-Token-Version` (optional hardening check against server-side token version)
 
 ## Database
 
@@ -279,6 +287,8 @@ SQLite schema is created automatically on startup with the following tables:
 - `alerts`
 - `alert_events`
 - `services`
+- `ingest_nonces`
+- `security_audit_events`
 
 ## systemd Units
 

@@ -477,7 +477,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ### Checklist
 
-- [ ] Rotation/revocation implemented
+- [x] Rotation/revocation implemented
 - [ ] Bulk ops implemented
 - [ ] Webhook hardening implemented
 - [ ] Migration tests added and green
@@ -485,6 +485,25 @@ This reflects current behavior in code so future slices extend, not contradict, 
 - [ ] Images published (GHCR)
 - [ ] Compose env tags updated
 - [ ] Post-deploy smoke validation completed
+
+---
+
+### Latest Update
+
+- 2026-03-12
+  - Added token revocation API (`POST /api/v1/nodes/{id}/token/revoke`) with audit logging in `security_audit_events`.
+  - Added node token lifecycle hardening fields:
+    - `token_version`
+    - `revoked_at`, `revoked_reason`, `revoked_by`
+  - Enforced revocation/version checks on:
+    - token refresh (`POST /api/v1/token/refresh`)
+    - signed push ingest (`POST /api/v1/ingest`, optional `X-PCM-Token-Version`)
+  - Agent now tracks and forwards token version during refresh and signed push.
+  - Poller now marks revoked nodes as `auth_failure` without attempting pull auth.
+  - Added tests for revocation + audit trail, version mismatch, and revoked-node polling behavior.
+  - Local validation:
+    - `dashboard: 20 passed`
+    - `agent: 9 passed`
 
 ---
 

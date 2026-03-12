@@ -23,10 +23,14 @@ def ensure_db(db_path: Path) -> None:
                 hostname TEXT NOT NULL,
                 ip_address TEXT NOT NULL,
                 token TEXT NOT NULL,
+                token_version INTEGER NOT NULL DEFAULT 1,
                 token_issued_at TEXT NULL,
                 token_expires_at TEXT NULL,
                 previous_token TEXT NULL,
                 previous_token_expires_at TEXT NULL,
+                revoked_at TEXT NULL,
+                revoked_reason TEXT NULL,
+                revoked_by TEXT NULL,
                 role TEXT NOT NULL DEFAULT 'worker',
                 agent_port INTEGER NOT NULL DEFAULT 8001,
                 use_tls INTEGER NOT NULL DEFAULT 0,
@@ -107,9 +111,21 @@ def ensure_db(db_path: Path) -> None:
                 FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS security_audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id INTEGER NULL,
+                event_type TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                reason TEXT NULL,
+                metadata_json TEXT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE SET NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_metric_samples_node_time ON metric_samples(node_id, collected_at);
             CREATE INDEX IF NOT EXISTS idx_alert_events_node_time ON alert_events(node_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_ingest_nonces_node_time ON ingest_nonces(node_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_security_audit_node_time ON security_audit_events(node_id, created_at);
             """
         )
         _ensure_nodes_columns(conn)
@@ -148,6 +164,14 @@ def _ensure_nodes_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE nodes ADD COLUMN previous_token TEXT NULL")
     if "previous_token_expires_at" not in columns:
         conn.execute("ALTER TABLE nodes ADD COLUMN previous_token_expires_at TEXT NULL")
+    if "token_version" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1")
+    if "revoked_at" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN revoked_at TEXT NULL")
+    if "revoked_reason" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN revoked_reason TEXT NULL")
+    if "revoked_by" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN revoked_by TEXT NULL")
     if "last_heartbeat_at" not in columns:
         conn.execute("ALTER TABLE nodes ADD COLUMN last_heartbeat_at TEXT NULL")
     if "last_error_category" not in columns:
