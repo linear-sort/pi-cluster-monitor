@@ -93,7 +93,7 @@ Each "Latest Update" entry must include:
 | 2 | Connectivity Resilience | done | Heartbeats, richer node state reasons, retry/backoff/circuit logic |
 | 3 | Transport Trust (TLS) | done | HTTPS polling and trust verification options |
 | 4 | Hybrid Push/Pull Metrics | done | Agent push ingest path with replay protection and dedupe |
-| 5 | Ops Hardening + Fleet Controls | in_progress | Token rotation/revocation, bulk ops, alert/webhook hardening |
+| 5 | Ops Hardening + Fleet Controls | released | Token rotation/revocation, bulk ops, alert/webhook hardening |
 
 ---
 
@@ -121,7 +121,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ## Slice 0 - Pipeline Foundation
 
-**Status:** `done`  
+**Status:** `released`  
 **Goal:** Ensure test-first CI and image publishing safety before major feature work.
 
 ### Deliverables
@@ -523,6 +523,11 @@ This reflects current behavior in code so future slices extend, not contradict, 
     - delivery visibility endpoint (`GET /api/v1/webhooks/deliveries`)
   - Added webhook tests (`dashboard/tests/test_webhooks.py`) for enqueue, success delivery, and failure transitions.
   - Updated dashboard env/compose docs and examples with webhook retry controls.
+- 2026-03-12
+  - Release promotion confirmed for `v0.5.2-slice5-webhooks`:
+    - `CI Tests` completed successfully
+    - `Build and Publish Docker Images` completed successfully
+  - Slice 5 advanced from `done` to `released`.
 
 ---
 
