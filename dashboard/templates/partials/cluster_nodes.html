@@ -7,6 +7,7 @@
         <th>IP</th>
         <th>Role</th>
         <th>Status</th>
+        <th>Conn</th>
         <th>Alert</th>
         <th>CPU</th>
         <th>Mem</th>
@@ -21,6 +22,13 @@
         <td>{{ n.ip_address }}</td>
         <td>{{ n.role }}</td>
         <td><span class="badge {{ n.last_status }}">{{ n.last_status }}</span></td>
+        <td>
+          {% if n.last_error_category %}
+          <span class="badge warning">{{ n.last_error_category }}</span>
+          {% else %}
+          <span class="badge online">ok</span>
+          {% endif %}
+        </td>
         <td><span class="badge {{ n.alert_severity }}">{{ n.alert_severity }}</span></td>
         <td>{{ n.cpu_percent if n.cpu_percent is not none else '-' }}</td>
         <td>{{ n.memory_percent if n.memory_percent is not none else '-' }}</td>

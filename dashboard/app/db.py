@@ -33,6 +33,11 @@ def ensure_db(db_path: Path) -> None:
                 enabled INTEGER NOT NULL DEFAULT 1,
                 enrollment_status TEXT NOT NULL DEFAULT 'manual',
                 enrolled_at TEXT NULL,
+                last_heartbeat_at TEXT NULL,
+                last_error_category TEXT NULL,
+                last_error_message TEXT NULL,
+                last_poll_error_at TEXT NULL,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
                 last_seen_at TEXT NULL,
                 last_status TEXT NOT NULL DEFAULT 'unknown',
                 created_at TEXT NOT NULL,
@@ -128,6 +133,16 @@ def _ensure_nodes_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE nodes ADD COLUMN previous_token TEXT NULL")
     if "previous_token_expires_at" not in columns:
         conn.execute("ALTER TABLE nodes ADD COLUMN previous_token_expires_at TEXT NULL")
+    if "last_heartbeat_at" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN last_heartbeat_at TEXT NULL")
+    if "last_error_category" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN last_error_category TEXT NULL")
+    if "last_error_message" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN last_error_message TEXT NULL")
+    if "last_poll_error_at" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN last_poll_error_at TEXT NULL")
+    if "consecutive_failures" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0")
 
 
 def token_expiry_iso(ttl_seconds: int) -> str:

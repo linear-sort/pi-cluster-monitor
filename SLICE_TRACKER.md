@@ -42,7 +42,7 @@ Update this document as each slice moves through development, testing, and deplo
 |---|---|---|---|
 | 0 | Pipeline Foundation | done | Harden CI/CD, Docker build smoke checks, publish gating |
 | 1 | Automatic Auth Bootstrap | in_progress | Agent enrollment and auto token provisioning |
-| 2 | Connectivity Resilience | planned | Heartbeats, richer node state reasons, retry/backoff/circuit logic |
+| 2 | Connectivity Resilience | in_progress | Heartbeats, richer node state reasons, retry/backoff/circuit logic |
 | 3 | Transport Trust (TLS) | planned | HTTPS polling and trust verification options |
 | 4 | Hybrid Push/Pull Metrics | planned | Agent push ingest path with replay protection and dedupe |
 | 5 | Ops Hardening + Fleet Controls | planned | Token rotation/revocation, bulk ops, alert/webhook hardening |
@@ -165,7 +165,7 @@ Update this document as each slice moves through development, testing, and deplo
 
 ## Slice 2 - Connectivity Resilience
 
-**Status:** `planned`  
+**Status:** `in_progress`  
 **Goal:** Improve reliability and observability on unstable LANs.
 
 ### Deliverables
@@ -191,11 +191,20 @@ Update this document as each slice moves through development, testing, and deplo
 
 ### Checklist
 
-- [ ] Heartbeat data model + API support
-- [ ] Poll state classification implemented
-- [ ] Backoff/circuit logic implemented
-- [ ] Tests added and green
+- [x] Heartbeat data model + API support
+- [x] Poll state classification implemented
+- [x] Backoff/circuit logic implemented
+- [x] Tests added and green
 - [ ] Deployed image tags promoted
+
+### Latest Update
+
+- 2026-03-12
+  - Added node heartbeat and poll-error fields (`last_heartbeat_at`, error category/message, consecutive failures).
+  - Poller now classifies failure modes (offline, timeout, auth_failure, metrics_parse_error, http/unknown).
+  - Added in-memory circuit breaker with configurable threshold/cooldown.
+  - Surfaced connection/error status in cluster node table and API node listing.
+  - Added/updated poller tests for auth classification and circuit-open skip behavior; local suites passed.
 
 ---
 

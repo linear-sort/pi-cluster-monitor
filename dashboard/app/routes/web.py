@@ -99,6 +99,7 @@ def _cluster_nodes(conn) -> list[dict]:
         SELECT
             n.id, n.name, n.hostname, n.ip_address, n.role, n.enabled, n.last_status, n.last_seen_at,
             n.enrollment_status, n.enrolled_at, n.token_expires_at,
+            n.last_heartbeat_at, n.last_error_category, n.last_error_message, n.consecutive_failures,
             ms.cpu_percent, ms.memory_percent, ms.disk_percent, ms.temperature_c,
             COALESCE(ev.severity, 'info') AS alert_severity
         FROM nodes n

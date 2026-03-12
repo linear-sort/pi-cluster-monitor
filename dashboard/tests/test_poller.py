@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import httpx
 
 from app.db import ensure_db, get_conn, utc_now_iso
 from app.models import AgentMetrics
@@ -90,7 +91,7 @@ async def test_record_failure_marks_offline_and_creates_alert(tmp_path: Path) ->
     node_id = _seed_node(db_path, last_seen_at=stale_seen)
     poller = PollingService(db_path=db_path)
 
-    await poller._record_failure(node_id=node_id)
+    await poller._record_failure(node_id=node_id, category="offline", message="connect failed", reachable=False)
 
     with get_conn(db_path) as conn:
         node = conn.execute("SELECT last_status FROM nodes WHERE id = ?", (node_id,)).fetchone()
@@ -110,6 +111,27 @@ async def test_record_failure_marks_offline_and_creates_alert(tmp_path: Path) ->
         ).fetchone()
         assert offline_event is not None
         assert offline_event["severity"] in {"warning", "critical"}
+
+
+@pytest.mark.asyncio
+async def test_record_failure_auth_keeps_node_online_and_sets_error(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    ensure_db(db_path)
+    node_id = _seed_node(db_path, last_seen_at=datetime.now(timezone.utc).isoformat())
+    poller = PollingService(db_path=db_path)
+
+    await poller._record_failure(node_id=node_id, category="auth_failure", message="unauthorized", reachable=True)
+
+    with get_conn(db_path) as conn:
+        node = conn.execute(
+            "SELECT last_status, last_error_category, last_heartbeat_at, consecutive_failures FROM nodes WHERE id = ?",
+            (node_id,),
+        ).fetchone()
+        assert node is not None
+        assert node["last_status"] == "online"
+        assert node["last_error_category"] == "auth_failure"
+        assert node["last_heartbeat_at"] is not None
+        assert node["consecutive_failures"] >= 1
 
 
 @pytest.mark.asyncio
@@ -155,3 +177,24 @@ async def test_retention_cleanup_deletes_old_rows(tmp_path: Path) -> None:
         assert conn.execute("SELECT COUNT(*) AS c FROM metric_samples").fetchone()["c"] == 0
         assert conn.execute("SELECT COUNT(*) AS c FROM alert_events").fetchone()["c"] == 0
         assert conn.execute("SELECT COUNT(*) AS c FROM services").fetchone()["c"] == 0
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_skips_polling_while_open(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    ensure_db(db_path)
+    node_id = _seed_node(db_path)
+    poller = PollingService(db_path=db_path, poll_failure_threshold=1, poll_circuit_cooldown_seconds=60)
+    poller._node_runtime[node_id] = {"failures": 1, "circuit_until": datetime.now(timezone.utc).timestamp() + 60}
+
+    called = {"count": 0}
+
+    async def fake_poll_node(client: httpx.AsyncClient, node: dict):  # noqa: ARG001
+        called["count"] += 1
+
+    monkeypatch.setattr(poller, "_poll_node", fake_poll_node)
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(1)) as client:
+        await poller._poll_due_nodes(client)
+
+    assert called["count"] == 0

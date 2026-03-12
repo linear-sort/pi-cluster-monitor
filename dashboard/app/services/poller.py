@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from app.db import fetch_all_dict, get_conn, utc_now_iso
 from app.models import AgentMetrics
@@ -19,6 +20,8 @@ class PollingService:
         db_path: Path,
         base_tick_seconds: int = 2,
         timeout_seconds: int = 4,
+        poll_failure_threshold: int = 3,
+        poll_circuit_cooldown_seconds: int = 60,
         metric_retention_hours: int = 48,
         alert_event_retention_days: int = 14,
         service_retention_days: int = 7,
@@ -27,6 +30,8 @@ class PollingService:
         self.db_path = db_path
         self.base_tick_seconds = max(1, base_tick_seconds)
         self.timeout_seconds = timeout_seconds
+        self.poll_failure_threshold = max(1, poll_failure_threshold)
+        self.poll_circuit_cooldown_seconds = max(5, poll_circuit_cooldown_seconds)
         self.metric_retention_hours = max(1, metric_retention_hours)
         self.alert_event_retention_days = max(1, alert_event_retention_days)
         self.service_retention_days = max(1, service_retention_days)
@@ -35,6 +40,7 @@ class PollingService:
         self._stop_event = asyncio.Event()
         self._last_poll: dict[int, float] = {}
         self._last_cleanup_epoch: float = 0.0
+        self._node_runtime: dict[int, dict[str, float | int]] = {}
 
     def start(self) -> None:
         if self._task is None:
@@ -70,6 +76,10 @@ class PollingService:
         for node in nodes:
             node_id = int(node["id"])
             poll_interval = max(3, int(node["poll_interval_seconds"]))
+            state = self._node_runtime.get(node_id, {})
+            circuit_until = float(state.get("circuit_until", 0.0))
+            if now_epoch < circuit_until:
+                continue
             last_polled = self._last_poll.get(node_id, 0.0)
             if now_epoch - last_polled < poll_interval:
                 continue
@@ -88,14 +98,33 @@ class PollingService:
         headers = {"Authorization": f"Bearer {token}"}
 
         try:
+            health_response = await client.get(f"{base_url}/health", headers=headers)
+            if health_response.status_code in (401, 403):
+                await self._record_failure(node_id, "auth_failure", "health unauthorized", reachable=True)
+                return
+            health_response.raise_for_status()
+
             response = await client.get(f"{base_url}/api/v1/metrics", headers=headers)
+            if response.status_code in (401, 403):
+                await self._record_failure(node_id, "auth_failure", "metrics unauthorized", reachable=True)
+                return
             response.raise_for_status()
             metrics_payload = response.json()
             metrics = AgentMetrics.model_validate(metrics_payload)
             services_payload = await self._fetch_services(client, base_url, headers)
             await self._record_success(node_id, metrics, metrics_payload, services_payload)
-        except Exception:
-            await self._record_failure(node_id)
+        except ValidationError as exc:
+            await self._record_failure(node_id, "metrics_parse_error", str(exc), reachable=True)
+        except httpx.TimeoutException as exc:
+            await self._record_failure(node_id, "timeout", str(exc), reachable=False)
+        except httpx.ConnectError as exc:
+            await self._record_failure(node_id, "offline", str(exc), reachable=False)
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            category = "auth_failure" if status_code in (401, 403) else "agent_http_error"
+            await self._record_failure(node_id, category, f"http_status={status_code}", reachable=True)
+        except Exception as exc:
+            await self._record_failure(node_id, "unknown_error", str(exc), reachable=False)
 
     async def _fetch_services(
         self,
@@ -128,10 +157,12 @@ class PollingService:
             conn.execute(
                 """
                 UPDATE nodes
-                SET last_seen_at = ?, last_status = 'online', updated_at = ?
+                SET last_seen_at = ?, last_heartbeat_at = ?, last_status = 'online',
+                    last_error_category = NULL, last_error_message = NULL, last_poll_error_at = NULL,
+                    consecutive_failures = 0, updated_at = ?
                 WHERE id = ?
                 """,
-                (now_iso, now_iso, node_id),
+                (now_iso, now_iso, now_iso, node_id),
             )
             conn.execute(
                 """
@@ -182,8 +213,16 @@ class PollingService:
                 },
             )
             evaluate_offline_alert(conn, node_id, 0)
+        self._node_runtime[node_id] = {"failures": 0, "circuit_until": 0.0}
 
-    async def _record_failure(self, node_id: int) -> None:
+    async def _record_failure(self, node_id: int, category: str, message: str, reachable: bool) -> None:
+        runtime = self._node_runtime.setdefault(node_id, {"failures": 0, "circuit_until": 0.0})
+        failures = int(runtime.get("failures", 0)) + 1
+        runtime["failures"] = failures
+        if failures >= self.poll_failure_threshold:
+            cooldown = min(self.poll_circuit_cooldown_seconds * failures, self.poll_circuit_cooldown_seconds * 5)
+            runtime["circuit_until"] = datetime.now(timezone.utc).timestamp() + float(cooldown)
+
         with get_conn(self.db_path) as conn:
             node = conn.execute(
                 "SELECT last_seen_at FROM nodes WHERE id = ?",
@@ -204,12 +243,24 @@ class PollingService:
             conn.execute(
                 """
                 UPDATE nodes
-                SET last_status = 'offline', updated_at = ?
+                SET last_status = ?, last_heartbeat_at = CASE WHEN ? THEN ? ELSE last_heartbeat_at END,
+                    last_error_category = ?, last_error_message = ?, last_poll_error_at = ?,
+                    consecutive_failures = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (utc_now_iso(), node_id),
+                (
+                    "online" if reachable else "offline",
+                    1 if reachable else 0,
+                    utc_now_iso(),
+                    category,
+                    message[:300],
+                    utc_now_iso(),
+                    failures,
+                    utc_now_iso(),
+                    node_id,
+                ),
             )
-            evaluate_offline_alert(conn, node_id, offline_seconds)
+            evaluate_offline_alert(conn, node_id, 0 if reachable else offline_seconds)
 
     async def _run_retention_cleanup_if_due(self) -> None:
         now_epoch = datetime.now(timezone.utc).timestamp()

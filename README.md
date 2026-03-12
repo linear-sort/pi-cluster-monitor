@@ -221,6 +221,8 @@ docker compose -f docker-compose.agent.dev.yml up -d --build
 - `DASHBOARD_ENROLL_SECRET` (default: `changeme-enroll`)
 - `DASHBOARD_TOKEN_TTL_SECONDS` (default: `86400`)
 - `DASHBOARD_TOKEN_GRACE_SECONDS` (default: `300`)
+- `DASHBOARD_POLL_FAILURE_THRESHOLD` (default: `3`)
+- `DASHBOARD_POLL_CIRCUIT_COOLDOWN_SECONDS` (default: `60`)
 - `DASHBOARD_METRIC_RETENTION_HOURS` (default: `48`)
 - `DASHBOARD_ALERT_RETENTION_DAYS` (default: `14`)
 - `DASHBOARD_SERVICE_RETENTION_DAYS` (default: `7`)

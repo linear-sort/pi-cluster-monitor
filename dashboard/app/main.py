@@ -25,6 +25,8 @@ async def lifespan(app: FastAPI):
         db_path=settings.db_path,
         base_tick_seconds=settings.poll_base_seconds,
         timeout_seconds=settings.http_timeout_seconds,
+        poll_failure_threshold=settings.poll_failure_threshold,
+        poll_circuit_cooldown_seconds=settings.poll_circuit_cooldown_seconds,
         metric_retention_hours=settings.metric_retention_hours,
         alert_event_retention_days=settings.alert_event_retention_days,
         service_retention_days=settings.service_retention_days,

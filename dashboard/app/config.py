@@ -14,6 +14,8 @@ class Settings(BaseModel):
     enroll_secret: str = "changeme-enroll"
     token_ttl_seconds: int = 86400
     token_grace_seconds: int = 300
+    poll_failure_threshold: int = 3
+    poll_circuit_cooldown_seconds: int = 60
     metric_retention_hours: int = 48
     alert_event_retention_days: int = 14
     service_retention_days: int = 7
@@ -33,6 +35,8 @@ def get_settings() -> Settings:
         enroll_secret=os.getenv("DASHBOARD_ENROLL_SECRET", "changeme-enroll"),
         token_ttl_seconds=max(60, int(os.getenv("DASHBOARD_TOKEN_TTL_SECONDS", "86400"))),
         token_grace_seconds=max(30, int(os.getenv("DASHBOARD_TOKEN_GRACE_SECONDS", "300"))),
+        poll_failure_threshold=max(1, int(os.getenv("DASHBOARD_POLL_FAILURE_THRESHOLD", "3"))),
+        poll_circuit_cooldown_seconds=max(5, int(os.getenv("DASHBOARD_POLL_CIRCUIT_COOLDOWN_SECONDS", "60"))),
         metric_retention_hours=int(os.getenv("DASHBOARD_METRIC_RETENTION_HOURS", "48")),
         alert_event_retention_days=int(os.getenv("DASHBOARD_ALERT_RETENTION_DAYS", "14")),
         service_retention_days=int(os.getenv("DASHBOARD_SERVICE_RETENTION_DAYS", "7")),
