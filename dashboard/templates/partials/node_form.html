@@ -21,6 +21,8 @@
       <option value="false" {% if node and not node.tls_verify %}selected{% endif %}>false</option>
     </select>
   </label>
+  <label>TLS CA Path (optional) <input name="tls_ca_path" value="{{ node.tls_ca_path if node else '' }}" /></label>
+  <label>TLS Cert Fingerprint SHA256 (optional) <input name="tls_fingerprint_sha256" value="{{ node.tls_fingerprint_sha256 if node else '' }}" /></label>
   <label>Poll Interval (s) <input name="poll_interval_seconds" type="number" min="3" value="{{ node.poll_interval_seconds if node else 10 }}" /></label>
   <label>
     Enabled

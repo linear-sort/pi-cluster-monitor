@@ -31,6 +31,8 @@ def ensure_db(db_path: Path) -> None:
                 agent_port INTEGER NOT NULL DEFAULT 8001,
                 use_tls INTEGER NOT NULL DEFAULT 0,
                 tls_verify INTEGER NOT NULL DEFAULT 1,
+                tls_ca_path TEXT NULL,
+                tls_fingerprint_sha256 TEXT NULL,
                 poll_interval_seconds INTEGER NOT NULL DEFAULT 10,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 enrollment_status TEXT NOT NULL DEFAULT 'manual',
@@ -149,6 +151,10 @@ def _ensure_nodes_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE nodes ADD COLUMN use_tls INTEGER NOT NULL DEFAULT 0")
     if "tls_verify" not in columns:
         conn.execute("ALTER TABLE nodes ADD COLUMN tls_verify INTEGER NOT NULL DEFAULT 1")
+    if "tls_ca_path" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN tls_ca_path TEXT NULL")
+    if "tls_fingerprint_sha256" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN tls_fingerprint_sha256 TEXT NULL")
 
 
 def token_expiry_iso(ttl_seconds: int) -> str:

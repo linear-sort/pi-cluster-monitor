@@ -14,6 +14,10 @@ Update this document as each slice moves through development, testing, and deplo
 - `done` - implemented and merged
 - `released` - deployed with published images
 
+Status usage rule:
+- Move a slice to `done` once implementation + tests are complete and merged, even if deployment promotion is still pending.
+- Use `released` only after image tags are promoted and post-deploy smoke validation is recorded.
+
 ---
 
 ## Quality and Release Rules (Applies to Every Slice)
@@ -36,6 +40,50 @@ Update this document as each slice moves through development, testing, and deplo
 
 ---
 
+## Cross-Cutting Architecture Contracts
+
+These contracts are mandatory and span multiple slices.
+
+### 1) Auth + Token Contract (Slice 1 baseline, Slice 5 hardening)
+
+- Node identity key:
+  - `node_id` is canonical identity in storage
+  - `hostname` is enrollment/refresh lookup key (must remain stable and unique in practice)
+- Tokens are opaque bearer credentials issued by dashboard.
+- Rotation model:
+  - one active token (`token`)
+  - one grace token (`previous_token`) valid until `previous_token_expires_at`
+- Refresh acceptance rules:
+  - current token must be unexpired
+  - previous token accepted only inside grace window
+- Slice 5 requirement:
+  - add explicit revocation/version check path so revoked credentials fail both polling auth and refresh auth.
+  - record revocation event metadata (who/when/reason) for auditability.
+
+### 2) Node Runtime State Contract (Slice 2 baseline)
+
+- `enrollment_status` models provisioning state (`manual`, `enrolled`).
+- `last_status` models transport reachability (`online`, `offline`).
+- `last_error_category` models last failure reason (`auth_failure`, `timeout`, `offline`, `metrics_parse_error`, `agent_http_error`, `unknown_error`).
+- UI/API must derive effective operator state from all three dimensions above to avoid conflating auth failures with network outages.
+
+### 3) Trust Boundary Contract (Slice 3 + Slice 4 coupling)
+
+- Slice 3 secures transport channel (HTTPS + certificate verification policy).
+- Slice 4 secures message authenticity/integrity (timestamp + nonce + signature/HMAC) and replay resistance.
+- Hybrid push/pull cannot be marked complete unless both channel trust and payload trust requirements are test-covered.
+
+### 4) Evidence Contract (every slice update)
+
+Each "Latest Update" entry must include:
+- date
+- PR number/link
+- CI evidence (`dashboard-tests`, `agent-tests`, and relevant integration jobs)
+- deployment/smoke evidence if promoted
+- explicit note for any deferred risk accepted into next slice
+
+---
+
 ## Slice Overview
 
 | Slice | Title | Status | Scope Summary |
@@ -46,6 +94,28 @@ Update this document as each slice moves through development, testing, and deplo
 | 3 | Transport Trust (TLS) | in_progress | HTTPS polling and trust verification options |
 | 4 | Hybrid Push/Pull Metrics | planned | Agent push ingest path with replay protection and dedupe |
 | 5 | Ops Hardening + Fleet Controls | planned | Token rotation/revocation, bulk ops, alert/webhook hardening |
+
+---
+
+## Current Implementation Flow Snapshot
+
+This reflects current behavior in code so future slices extend, not contradict, runtime flow.
+
+1. Agent startup:
+   - loads token from file fallback, then static env token fallback.
+   - starts enrollment/refresh loop when dashboard URL is configured.
+2. Enrollment:
+   - agent posts to `POST /api/v1/enroll` with shared enrollment secret and node metadata.
+   - dashboard creates or updates node record and issues token + expiry.
+3. Refresh:
+   - agent periodically calls `POST /api/v1/token/refresh` with bearer token.
+   - dashboard rotates token and keeps previous token during grace window.
+4. Polling:
+   - dashboard poller schedules due nodes, applies per-node circuit cooldown, and polls `/health` then `/api/v1/metrics`.
+   - poller classifies failures and updates `last_status`, heartbeat timestamps, and failure counters.
+5. TLS:
+   - per-node `use_tls` and `tls_verify` flags affect polling transport mode now.
+   - advanced trust policies (custom CA/fingerprint pinning) are still pending.
 
 ---
 
@@ -79,6 +149,9 @@ Update this document as each slice moves through development, testing, and deplo
 - `ci-tests.yml` passes on PR.
 - Docker smoke build job passes on PR.
 - `docker-publish.yml` only publishes when gating jobs pass.
+- Images published to GHCR for target release tags.
+- Compose env image tags updated to promoted release tags.
+- Post-deploy smoke validation completed and recorded.
 
 ### Checklist
 
@@ -86,6 +159,9 @@ Update this document as each slice moves through development, testing, and deplo
 - [x] CI test jobs updated
 - [x] Docker build smoke job added
 - [x] Publish gating validated on a tag workflow run
+- [x] Images published (GHCR)
+- [x] Compose env tags updated
+- [x] Post-deploy smoke validation completed
 
 ### Latest Update
 
@@ -101,6 +177,8 @@ Update this document as each slice moves through development, testing, and deplo
 - 2026-03-12
   - Publish gating validated via tag-triggered workflow runs (`v0.0.1-slice0`, `v0.0.2-slice0-fix`).
   - Fixed CI import resolution using app-specific `tests/conftest.py` files.
+- 2026-03-12
+  - Deployment confirmation received for Slice 0 baseline; tracker evidence reconciled with successful rollout.
 
 ---
 
@@ -116,6 +194,7 @@ Update this document as each slice moves through development, testing, and deplo
 - Agent enrollment flow with retry/backoff until successful.
 - Node enrollment status in dashboard UI/API.
 - Periodic agent token refresh flow (time-based renewal with overlap/grace handling).
+- Security contract documented for token identity, refresh, and future revocation compatibility.
 
 ### Tests Required
 
@@ -138,6 +217,10 @@ Update this document as each slice moves through development, testing, and deplo
 - Publish workflow blocked on those tests.
 - Deployment notes include enrollment secret rotation guidance.
 - Token refresh interval and grace-window behavior documented and validated.
+- Revocation/versioning rollout plan captured for Slice 5 handoff.
+- Images published to GHCR for target release tags.
+- Compose env image tags updated to promoted release tags.
+- Post-deploy smoke validation completed and recorded.
 
 ### Checklist
 
@@ -145,8 +228,11 @@ Update this document as each slice moves through development, testing, and deplo
 - [x] Agent enrollment client implemented
 - [x] UI/API enrollment status added
 - [x] Periodic token refresh/rotation implemented
+- [x] Security contract baseline recorded (identity, refresh, grace semantics)
 - [x] Tests added and green
-- [x] Deployed image tags promoted
+- [x] Images published (GHCR)
+- [x] Compose env tags updated
+- [x] Post-deploy smoke validation completed
 
 ### Latest Update
 
@@ -160,6 +246,8 @@ Update this document as each slice moves through development, testing, and deplo
   - Added periodic agent refresh loop and new refresh settings/env wiring.
   - Surfaced enrollment/token expiry status in settings UI and node API listing.
   - Added refresh + rollover tests and validated local suites (`dashboard: 9 passed`, `agent: 7 passed`).
+- 2026-03-12
+  - Deployment confirmation received; image tags were promoted and Slice 1 tracker state was reconciled.
 
 ---
 
@@ -177,6 +265,7 @@ Update this document as each slice moves through development, testing, and deplo
   - timeout
   - metrics parse error
 - Retry/backoff with jitter and circuit breaker behavior.
+- Explicit effective state mapping for operators (reachability vs auth vs enrollment dimensions).
 
 ### Tests Required
 
@@ -188,14 +277,21 @@ Update this document as each slice moves through development, testing, and deplo
 
 - Failure-path tests green and stable.
 - Alert behavior verified for each failure class.
+- UI/API behavior validated to prevent auth-failure and offline state conflation.
+- Images published to GHCR for target release tags.
+- Compose env image tags updated to promoted release tags.
+- Post-deploy smoke validation completed and recorded.
 
 ### Checklist
 
 - [x] Heartbeat data model + API support
 - [x] Poll state classification implemented
 - [x] Backoff/circuit logic implemented
+- [x] Effective state contract documented for UI/API consumers
 - [x] Tests added and green
-- [x] Deployed image tags promoted
+- [x] Images published (GHCR)
+- [x] Compose env tags updated
+- [x] Post-deploy smoke validation completed
 
 ### Latest Update
 
@@ -216,8 +312,13 @@ Update this document as each slice moves through development, testing, and deplo
 ### Deliverables
 
 - HTTPS support for agent endpoints.
-- Dashboard node-level TLS settings (mode, CA/fingerprint).
-- Optional strict verification policies.
+- Dashboard node-level TLS settings:
+  - mode (`disabled`, `required`)
+  - verify policy (`system_ca`, `custom_ca`, `fingerprint_pin`, `insecure_skip_verify`)
+- Trust material handling:
+  - CA bundle upload/reference
+  - certificate fingerprint pin storage + validation
+- Operator-visible failure reasons for TLS handshake/verification failures.
 
 ### Tests Required
 
@@ -226,19 +327,26 @@ Update this document as each slice moves through development, testing, and deplo
   - valid cert path succeeds
   - invalid/untrusted cert path fails with clear reason
 - Regression tests for non-TLS mode compatibility.
+- Tests for each verify policy path (system CA, custom CA, fingerprint pin, insecure mode).
 
 ### Deployment Gate
 
 - TLS + non-TLS test paths pass in CI.
 - Clear rollout/migration docs for existing nodes.
+- Images published to GHCR for target release tags.
+- Compose env image tags updated to promoted release tags.
+- Post-deploy smoke validation completed and recorded.
 
 ### Checklist
 
 - [x] TLS options added to node config
 - [x] HTTPS polling support implemented
 - [x] Trust verification behavior implemented
+- [x] TLS error classification surfaced in UI/API
 - [x] Tests added and green
-- [ ] Deployed image tags promoted
+- [ ] Images published (GHCR)
+- [ ] Compose env tags updated
+- [ ] Post-deploy smoke validation completed
 
 ### Latest Update
 
@@ -247,6 +355,19 @@ Update this document as each slice moves through development, testing, and deplo
   - Updated settings UI/form and save handlers to manage TLS mode per node.
   - Poller now selects `http`/`https` per node and supports insecure TLS mode (`verify=False`) when configured.
   - Added tests for TLS config persistence and HTTPS polling behavior; local suites passed.
+- 2026-03-12
+  - Repository audit aligned Slice 3 checklist with implemented scope:
+    - current implementation supports per-node TLS enable/disable plus basic verify toggle
+    - custom CA and fingerprint pinning policies are not implemented yet
+    - verify-policy matrix tests are still pending
+- 2026-03-12
+  - Added per-node `tls_ca_path` support for strict custom-CA verification path.
+  - Poller now short-circuits with `tls_config_error` when CA path is missing and surfaces it in node connectivity state.
+  - Added tests for CA-path persistence and TLS config error behavior (`dashboard: 14 passed`, `agent: 7 passed`).
+- 2026-03-12
+  - Added fingerprint pin policy via `tls_fingerprint_sha256` (SHA256 cert pin verification).
+  - Poller now classifies pin mismatches as `tls_verify_error` with explicit mismatch detail.
+  - Added tests for fingerprint normalization, persistence, and mismatch behavior.
 
 ---
 
@@ -258,9 +379,10 @@ Update this document as each slice moves through development, testing, and deplo
 ### Deliverables
 
 - Dashboard ingest endpoint for agent metric push.
-- Replay protection (timestamp/nonce/signature).
+- Replay protection (timestamp/nonce/signature) with bounded acceptance window.
 - Deduplication across push/pull sources.
 - Per-node mode toggle: pull, push, hybrid.
+- Signature contract bound to node identity and token lifecycle (rotation-compatible verification keys).
 
 ### Tests Required
 
@@ -268,11 +390,15 @@ Update this document as each slice moves through development, testing, and deplo
 - Replay attack rejection tests.
 - Deduplication/idempotency tests.
 - Integration tests for push-only and hybrid scenarios.
+- Cross-mode tests proving pull + push trust parity (TLS + signature path together).
 
 ### Deployment Gate
 
 - Ingest and dedupe tests green.
 - Backward compatibility verified for pull-only nodes.
+- Images published to GHCR for target release tags.
+- Compose env image tags updated to promoted release tags.
+- Post-deploy smoke validation completed and recorded.
 
 ### Checklist
 
@@ -280,8 +406,11 @@ Update this document as each slice moves through development, testing, and deplo
 - [ ] Replay protection implemented
 - [ ] Deduplication implemented
 - [ ] Mode toggles added
+- [ ] Signature and nonce storage/TTL strategy implemented
 - [ ] Tests added and green
-- [ ] Deployed image tags promoted
+- [ ] Images published (GHCR)
+- [ ] Compose env tags updated
+- [ ] Post-deploy smoke validation completed
 
 ---
 
@@ -296,6 +425,10 @@ Update this document as each slice moves through development, testing, and deplo
 - Bulk node operations (enable/disable, intervals, role updates).
 - Alert/webhook hardening and retry visibility.
 - Migration support for new auth/ops fields.
+- Revocation enforcement integrated into:
+  - polling authorization behavior
+  - token refresh authorization behavior
+- Audit trail for security-sensitive fleet actions (rotation, revocation, bulk updates).
 
 ### Tests Required
 
@@ -303,11 +436,15 @@ Update this document as each slice moves through development, testing, and deplo
 - Revocation enforcement tests.
 - Bulk operation correctness and rollback tests.
 - Migration tests for fresh + existing databases.
+- Authorization boundary tests for admin-only fleet operations.
 
 ### Deployment Gate
 
 - Security and migration suites pass.
 - Release checklist confirms no breaking upgrade path.
+- Images published to GHCR for target release tags.
+- Compose env image tags updated to promoted release tags.
+- Post-deploy smoke validation completed and recorded.
 
 ### Checklist
 
@@ -315,7 +452,10 @@ Update this document as each slice moves through development, testing, and deplo
 - [ ] Bulk ops implemented
 - [ ] Webhook hardening implemented
 - [ ] Migration tests added and green
-- [ ] Deployed image tags promoted
+- [ ] Security audit trail implemented and verified
+- [ ] Images published (GHCR)
+- [ ] Compose env tags updated
+- [ ] Post-deploy smoke validation completed
 
 ---
 
@@ -325,9 +465,22 @@ On each PR:
 
 1. Update the relevant slice `Status`.
 2. Check/uncheck checklist items to reflect implementation reality.
-3. Add a short note under the slice:
+3. Add a short note under the slice using this template:
    - date
-   - PR number
+   - PR number/link
    - what changed
-   - test evidence
+   - CI evidence (`dashboard-tests`, `agent-tests`, and any slice-specific integration jobs)
+   - deploy/smoke evidence if promoted
+   - deferred risk note (if anything intentionally postponed)
 4. When deployed, change status to `released` and record image tags.
+
+---
+
+## Audit Notes
+
+- 2026-03-12 repository-only stage audit:
+  - Slice 0 requirements are represented in workflow/config files and remain `done`; deployment success was later confirmed.
+  - Slice 1 implementation and tests exist in code; deployment success was later confirmed and deployment checklist was reconciled.
+  - Slice 2 core resilience logic is implemented; deployment confirmation was later provided and slice was advanced to `done`.
+  - Slice 3 remains `in_progress`; basic TLS transport wiring exists, while advanced trust policy support and related tests are pending.
+  - Slice 4 and Slice 5 remain `planned`; no push ingest, replay protection, revocation, bulk ops, or audit trail implementation found.

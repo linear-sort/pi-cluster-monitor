@@ -81,6 +81,7 @@ docker compose -f docker-compose.dashboard.yml up -d
 
 In **Settings**, add each Pi node IP/token and poll configuration.
 For secure transport, you can enable per-node TLS in Settings and optionally disable certificate verification for self-signed lab setups.
+For stricter trust, set a per-node CA bundle path (`tls_ca_path`) and keep TLS verification enabled.
 
 ## Local Python Setup (Optional)
 

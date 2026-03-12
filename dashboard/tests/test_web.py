@@ -150,6 +150,8 @@ def test_settings_save_tls_flags(tmp_path: Path) -> None:
                 "agent_port": 8001,
                 "use_tls": "true",
                 "tls_verify": "false",
+                "tls_ca_path": "/etc/ssl/certs/custom-ca.pem",
+                "tls_fingerprint_sha256": "aa:bb:cc",
                 "poll_interval_seconds": 10,
                 "enabled": "true",
             },
@@ -159,11 +161,13 @@ def test_settings_save_tls_flags(tmp_path: Path) -> None:
 
     with get_conn(db_path) as conn:
         node = conn.execute(
-            "SELECT use_tls, tls_verify FROM nodes WHERE hostname = 'pi-tls.local'"
+            "SELECT use_tls, tls_verify, tls_ca_path, tls_fingerprint_sha256 FROM nodes WHERE hostname = 'pi-tls.local'"
         ).fetchone()
         assert node is not None
         assert node["use_tls"] == 1
         assert node["tls_verify"] == 0
+        assert node["tls_ca_path"] == "/etc/ssl/certs/custom-ca.pem"
+        assert node["tls_fingerprint_sha256"] == "aa:bb:cc"
 
 
 def test_agent_enrollment_creates_or_updates_node(tmp_path: Path) -> None:

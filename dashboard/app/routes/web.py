@@ -98,7 +98,7 @@ def _cluster_nodes(conn) -> list[dict]:
         """
         SELECT
             n.id, n.name, n.hostname, n.ip_address, n.role, n.enabled, n.last_status, n.last_seen_at,
-            n.enrollment_status, n.enrolled_at, n.token_expires_at, n.use_tls, n.tls_verify,
+            n.enrollment_status, n.enrolled_at, n.token_expires_at, n.use_tls, n.tls_verify, n.tls_ca_path, n.tls_fingerprint_sha256,
             n.last_heartbeat_at, n.last_error_category, n.last_error_message, n.consecutive_failures,
             ms.cpu_percent, ms.memory_percent, ms.disk_percent, ms.temperature_c,
             COALESCE(ev.severity, 'info') AS alert_severity
@@ -292,6 +292,8 @@ def save_node(
     agent_port: int = Form(default=8001),
     use_tls: str = Form(default="false"),
     tls_verify: str = Form(default="true"),
+    tls_ca_path: str = Form(default=""),
+    tls_fingerprint_sha256: str = Form(default=""),
     poll_interval_seconds: int = Form(default=10),
     enabled: str = Form(default="true"),
 ) -> RedirectResponse:
@@ -305,7 +307,8 @@ def save_node(
                 """
                 UPDATE nodes
                 SET name=?, hostname=?, ip_address=?, token=?, role=?,
-                    agent_port=?, use_tls=?, tls_verify=?, poll_interval_seconds=?, enabled=?, updated_at=?
+                    agent_port=?, use_tls=?, tls_verify=?, tls_ca_path=?, tls_fingerprint_sha256=?,
+                    poll_interval_seconds=?, enabled=?, updated_at=?
                 WHERE id=?
                 """,
                 (
@@ -317,6 +320,8 @@ def save_node(
                     int(agent_port),
                     1 if use_tls_bool else 0,
                     1 if tls_verify_bool else 0,
+                    tls_ca_path.strip() or None,
+                    tls_fingerprint_sha256.strip() or None,
                     max(3, int(poll_interval_seconds)),
                     1 if enabled_bool else 0,
                     now_iso,
@@ -328,10 +333,10 @@ def save_node(
                 """
                 INSERT INTO nodes (
                     name, hostname, ip_address, token, role,
-                    agent_port, use_tls, tls_verify, poll_interval_seconds, enabled,
+                    agent_port, use_tls, tls_verify, tls_ca_path, tls_fingerprint_sha256, poll_interval_seconds, enabled,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name.strip(),
@@ -342,6 +347,8 @@ def save_node(
                     int(agent_port),
                     1 if use_tls_bool else 0,
                     1 if tls_verify_bool else 0,
+                    tls_ca_path.strip() or None,
+                    tls_fingerprint_sha256.strip() or None,
                     max(3, int(poll_interval_seconds)),
                     1 if enabled_bool else 0,
                     now_iso,

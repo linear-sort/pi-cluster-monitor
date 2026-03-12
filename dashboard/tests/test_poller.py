@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -253,8 +254,73 @@ async def test_poll_node_uses_https_when_tls_enabled(monkeypatch, tmp_path: Path
         "agent_port": 8001,
         "use_tls": 1,
         "tls_verify": 1,
+        "tls_ca_path": "",
     }
     async with httpx.AsyncClient(timeout=httpx.Timeout(1)) as client:
         await poller._poll_node(client, node)
 
     assert any(url.startswith("https://10.0.0.10:8001/health") for url in calls)
+
+
+@pytest.mark.asyncio
+async def test_poll_node_missing_tls_ca_path_sets_config_error(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    ensure_db(db_path)
+    node_id = _seed_node(db_path)
+    poller = PollingService(db_path=db_path)
+
+    node = {
+        "id": node_id,
+        "ip_address": "10.0.0.10",
+        "token": "token",
+        "agent_port": 8001,
+        "use_tls": 1,
+        "tls_verify": 1,
+        "tls_ca_path": str(tmp_path / "missing-ca.pem"),
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(1)) as client:
+        await poller._poll_node(client, node)
+
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT last_error_category, last_error_message FROM nodes WHERE id = ?",
+            (node_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["last_error_category"] == "tls_config_error"
+        assert "tls_ca_path_not_found" in row["last_error_message"]
+
+
+def test_normalize_fingerprint() -> None:
+    assert PollingService._normalize_fingerprint("AA:bb:CC") == "aabbcc"
+
+
+@pytest.mark.asyncio
+async def test_poll_node_fingerprint_mismatch_sets_tls_verify_error(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    ensure_db(db_path)
+    node_id = _seed_node(db_path)
+    poller = PollingService(db_path=db_path)
+    monkeypatch.setattr(poller, "_fetch_tls_fingerprint", lambda host, port: asyncio.sleep(0, result="deadbeef"))
+
+    node = {
+        "id": node_id,
+        "ip_address": "10.0.0.10",
+        "token": "token",
+        "agent_port": 8001,
+        "use_tls": 1,
+        "tls_verify": 1,
+        "tls_ca_path": "",
+        "tls_fingerprint_sha256": "ab:cd",
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(1)) as client:
+        await poller._poll_node(client, node)
+
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT last_error_category, last_error_message FROM nodes WHERE id = ?",
+            (node_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["last_error_category"] == "tls_verify_error"
+        assert "fingerprint_mismatch" in row["last_error_message"]

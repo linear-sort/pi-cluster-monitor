@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
+import socket
+import ssl
 from typing import Any
 
 import httpx
@@ -65,7 +68,7 @@ class PollingService:
                 conn,
                 """
                 SELECT id, ip_address, token, poll_interval_seconds, enabled, agent_port
-                       , use_tls, tls_verify
+                       , use_tls, tls_verify, tls_ca_path, tls_fingerprint_sha256
                 FROM nodes
                 WHERE enabled = 1
                 """,
@@ -97,15 +100,44 @@ class PollingService:
         port = int(node.get("agent_port") or 8001)
         use_tls = bool(int(node.get("use_tls") or 0))
         tls_verify = bool(int(node.get("tls_verify") or 1))
+        tls_ca_path = str(node.get("tls_ca_path") or "").strip()
+        tls_fingerprint_sha256 = str(node.get("tls_fingerprint_sha256") or "").strip()
         scheme = "https" if use_tls else "http"
         base_url = f"{scheme}://{ip}:{port}"
         headers = {"Authorization": f"Bearer {token}"}
         request_client = client
-        insecure_client: httpx.AsyncClient | None = None
+        dedicated_client: httpx.AsyncClient | None = None
 
-        if use_tls and not tls_verify:
-            insecure_client = httpx.AsyncClient(timeout=httpx.Timeout(self.timeout_seconds), verify=False)
-            request_client = insecure_client
+        if use_tls:
+            if tls_fingerprint_sha256:
+                server_fp = await self._fetch_tls_fingerprint(ip, port)
+                expected_fp = self._normalize_fingerprint(tls_fingerprint_sha256)
+                if not server_fp:
+                    await self._record_failure(node_id, "tls_verify_error", "unable_to_read_peer_certificate", reachable=False)
+                    return
+                if server_fp != expected_fp:
+                    await self._record_failure(
+                        node_id,
+                        "tls_verify_error",
+                        f"fingerprint_mismatch expected={expected_fp} actual={server_fp}",
+                        reachable=True,
+                    )
+                    return
+
+            if not tls_verify:
+                dedicated_client = httpx.AsyncClient(timeout=httpx.Timeout(self.timeout_seconds), verify=False)
+                request_client = dedicated_client
+            elif tls_ca_path:
+                if not Path(tls_ca_path).exists():
+                    await self._record_failure(
+                        node_id,
+                        "tls_config_error",
+                        f"tls_ca_path_not_found={tls_ca_path}",
+                        reachable=True,
+                    )
+                    return
+                dedicated_client = httpx.AsyncClient(timeout=httpx.Timeout(self.timeout_seconds), verify=tls_ca_path)
+                request_client = dedicated_client
 
         try:
             health_response = await request_client.get(f"{base_url}/health", headers=headers)
@@ -129,6 +161,10 @@ class PollingService:
             await self._record_failure(node_id, "timeout", str(exc), reachable=False)
         except httpx.ConnectError as exc:
             await self._record_failure(node_id, "offline", str(exc), reachable=False)
+        except httpx.TransportError as exc:
+            msg = str(exc)
+            category = "tls_verify_error" if "CERTIFICATE_VERIFY_FAILED" in msg else "transport_error"
+            await self._record_failure(node_id, category, msg, reachable=False)
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             category = "auth_failure" if status_code in (401, 403) else "agent_http_error"
@@ -136,8 +172,29 @@ class PollingService:
         except Exception as exc:
             await self._record_failure(node_id, "unknown_error", str(exc), reachable=False)
         finally:
-            if insecure_client is not None:
-                await insecure_client.aclose()
+            if dedicated_client is not None:
+                await dedicated_client.aclose()
+
+    @staticmethod
+    def _normalize_fingerprint(value: str) -> str:
+        return value.strip().lower().replace(":", "")
+
+    async def _fetch_tls_fingerprint(self, host: str, port: int) -> str | None:
+        def _sync_fetch() -> str | None:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            try:
+                with socket.create_connection((host, port), timeout=self.timeout_seconds) as sock:
+                    with context.wrap_socket(sock, server_hostname=host) as tls_sock:
+                        cert_bin = tls_sock.getpeercert(binary_form=True)
+                if not cert_bin:
+                    return None
+                return hashlib.sha256(cert_bin).hexdigest().lower()
+            except Exception:
+                return None
+
+        return await asyncio.to_thread(_sync_fetch)
 
     async def _fetch_services(
         self,

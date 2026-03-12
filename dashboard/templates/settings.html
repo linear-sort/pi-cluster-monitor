@@ -25,7 +25,9 @@
         <td>{{ n.agent_port }}</td>
         <td>
           {% if n.use_tls %}
-          <span class="badge online">https {% if n.tls_verify %}(verify){% else %}(insecure){% endif %}</span>
+          <span class="badge online">
+            https {% if n.tls_verify %}(verify{% if n.tls_ca_path %}:ca{% endif %}{% if n.tls_fingerprint_sha256 %}:pin{% endif %}){% else %}(insecure){% endif %}
+          </span>
           {% else %}
           <span class="badge warning">http</span>
           {% endif %}
