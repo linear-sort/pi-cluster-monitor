@@ -57,4 +57,11 @@ def test_ensure_db_migrates_legacy_nodes_columns(tmp_path: Path) -> None:
         assert "revoked_reason" in columns
         assert "revoked_by" in columns
         assert "collect_mode" in columns
+        assert "agent_id" in columns
+
+        indexes = {
+            row[1]
+            for row in conn.execute("PRAGMA index_list(nodes)").fetchall()
+        }
+        assert "idx_nodes_agent_id_unique" in indexes
 

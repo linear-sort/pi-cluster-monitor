@@ -201,6 +201,7 @@ def test_agent_enrollment_creates_or_updates_node(tmp_path: Path) -> None:
             json={
                 "enroll_secret": "enroll-secret",
                 "hostname": "pi-auto.local",
+                "agent_id": "agent-auto-1",
                 "name": "pi-auto",
                 "ip_address": "10.0.0.50",
                 "agent_port": 8001,
@@ -218,6 +219,7 @@ def test_agent_enrollment_creates_or_updates_node(tmp_path: Path) -> None:
             json={
                 "enroll_secret": "enroll-secret",
                 "hostname": "pi-auto.local",
+                "agent_id": "agent-auto-1",
                 "name": "pi-auto-renamed",
                 "ip_address": "10.0.0.50",
                 "agent_port": 8001,
@@ -229,6 +231,7 @@ def test_agent_enrollment_creates_or_updates_node(tmp_path: Path) -> None:
         update_payload = update_resp.json()
         assert update_payload["node_id"] == create_payload["node_id"]
         assert update_payload["token"] != create_payload["token"]
+        assert update_payload["agent_id"] == "agent-auto-1"
 
         bad_resp = client.post(
             "/api/v1/enroll",
@@ -238,11 +241,12 @@ def test_agent_enrollment_creates_or_updates_node(tmp_path: Path) -> None:
 
     with get_conn(db_path) as conn:
         row = conn.execute(
-            "SELECT name, enrollment_status, enrolled_at, poll_interval_seconds FROM nodes WHERE hostname = ?",
+            "SELECT name, agent_id, enrollment_status, enrolled_at, poll_interval_seconds FROM nodes WHERE hostname = ?",
             ("pi-auto.local",),
         ).fetchone()
         assert row is not None
         assert row["name"] == "pi-auto-renamed"
+        assert row["agent_id"] == "agent-auto-1"
         assert row["enrollment_status"] == "enrolled"
         assert row["enrolled_at"] is not None
         assert row["poll_interval_seconds"] == 15
@@ -261,6 +265,7 @@ def test_token_refresh_rotates_node_token(tmp_path: Path) -> None:
             json={
                 "enroll_secret": "enroll-secret",
                 "hostname": "pi-refresh.local",
+                "agent_id": "agent-refresh-1",
                 "name": "pi-refresh",
                 "ip_address": "10.0.0.51",
                 "agent_port": 8001,
@@ -273,7 +278,7 @@ def test_token_refresh_rotates_node_token(tmp_path: Path) -> None:
 
         refresh_resp = client.post(
             "/api/v1/token/refresh",
-            json={"hostname": "pi-refresh.local"},
+            json={"hostname": "pi-refresh.local", "agent_id": "agent-refresh-1"},
             headers={"Authorization": f"Bearer {old_token}"},
         )
         assert refresh_resp.status_code == 200
@@ -286,14 +291,14 @@ def test_token_refresh_rotates_node_token(tmp_path: Path) -> None:
         # Old token should still be accepted briefly via grace window.
         grace_resp = client.post(
             "/api/v1/token/refresh",
-            json={"hostname": "pi-refresh.local"},
+            json={"hostname": "pi-refresh.local", "agent_id": "agent-refresh-1"},
             headers={"Authorization": f"Bearer {old_token}"},
         )
         assert grace_resp.status_code == 200
 
         bad_resp = client.post(
             "/api/v1/token/refresh",
-            json={"hostname": "pi-refresh.local"},
+            json={"hostname": "pi-refresh.local", "agent_id": "agent-refresh-1"},
             headers={"Authorization": "Bearer invalid-token"},
         )
         assert bad_resp.status_code == 401
@@ -327,6 +332,63 @@ def test_token_refresh_rejects_version_mismatch(tmp_path: Path) -> None:
         assert refresh_resp.json()["detail"] == "Token version mismatch"
 
 
+def test_enrollment_rejects_agent_id_rebinding_conflict(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_ENROLL_SECRET"] = "enroll-secret"
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-ident-a.local",
+                "agent_id": "agent-shared",
+                "ip_address": "10.0.0.71",
+            },
+        )
+        assert first.status_code == 200
+
+        second = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-ident-a.local",
+                "agent_id": "agent-other",
+                "ip_address": "10.0.0.71",
+            },
+        )
+        assert second.status_code == 409
+        assert second.json()["detail"] == "Agent identity conflict"
+
+
+def test_token_refresh_rejects_agent_identity_mismatch(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_ENROLL_SECRET"] = "enroll-secret"
+
+    with TestClient(app) as client:
+        enroll_resp = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-mismatch.local",
+                "agent_id": "agent-mismatch-1",
+                "ip_address": "10.0.0.72",
+            },
+        )
+        assert enroll_resp.status_code == 200
+        token = enroll_resp.json()["token"]
+
+        refresh_resp = client.post(
+            "/api/v1/token/refresh",
+            json={"hostname": "pi-other.local", "agent_id": "agent-mismatch-1"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert refresh_resp.status_code == 409
+        assert refresh_resp.json()["detail"] == "Identity binding mismatch"
+
+
 def test_ingest_accepts_signed_payload_and_rejects_replay(tmp_path: Path) -> None:
     db_path = tmp_path / "cluster.db"
     os.environ["DASHBOARD_DB_PATH"] = str(db_path)
@@ -338,6 +400,7 @@ def test_ingest_accepts_signed_payload_and_rejects_replay(tmp_path: Path) -> Non
             json={
                 "enroll_secret": "enroll-secret",
                 "hostname": "pi-push.local",
+                "agent_id": "agent-push-1",
                 "name": "pi-push",
                 "ip_address": "10.0.0.52",
                 "agent_port": 8001,
@@ -350,6 +413,7 @@ def test_ingest_accepts_signed_payload_and_rejects_replay(tmp_path: Path) -> Non
 
         payload = {
             "hostname": "pi-push.local",
+            "agent_id": "agent-push-1",
             "timestamp": utc_now_iso(),
             "cpu_percent": 10.0,
             "memory_percent": 20.0,
@@ -393,6 +457,7 @@ def test_revoke_token_blocks_refresh_and_ingest_and_records_audit(tmp_path: Path
             json={
                 "enroll_secret": "enroll-secret",
                 "hostname": "pi-revoke.local",
+                "agent_id": "agent-revoke-1",
                 "name": "pi-revoke",
                 "ip_address": "10.0.0.61",
             },
@@ -414,7 +479,7 @@ def test_revoke_token_blocks_refresh_and_ingest_and_records_audit(tmp_path: Path
 
         refresh_resp = client.post(
             "/api/v1/token/refresh",
-            json={"hostname": "pi-revoke.local", "token_version": token_version},
+            json={"hostname": "pi-revoke.local", "agent_id": "agent-revoke-1", "token_version": token_version},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert refresh_resp.status_code == 401
@@ -422,6 +487,7 @@ def test_revoke_token_blocks_refresh_and_ingest_and_records_audit(tmp_path: Path
 
         payload = {
             "hostname": "pi-revoke.local",
+            "agent_id": "agent-revoke-1",
             "timestamp": utc_now_iso(),
             "cpu_percent": 10.0,
             "memory_percent": 20.0,
@@ -674,3 +740,52 @@ def test_webhook_deliveries_api_returns_filtered_rows(tmp_path: Path) -> None:
         assert len(deliveries) == 1
         assert deliveries[0]["status"] == "failed"
         assert deliveries[0]["node_name"] == "pi-webhook"
+
+
+def test_ingest_rejects_agent_identity_mismatch(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_ENROLL_SECRET"] = "enroll-secret"
+
+    with TestClient(app) as client:
+        enroll_resp = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-ingest-id.local",
+                "agent_id": "agent-ingest-1",
+                "ip_address": "10.0.0.92",
+            },
+        )
+        assert enroll_resp.status_code == 200
+        token = enroll_resp.json()["token"]
+
+        payload = {
+            "hostname": "pi-different-host.local",
+            "agent_id": "agent-ingest-1",
+            "timestamp": utc_now_iso(),
+            "cpu_percent": 11.0,
+            "memory_percent": 22.0,
+            "disk_percent": 33.0,
+            "temperature_c": 44.0,
+            "uptime_seconds": 120,
+            "load_1": 0.1,
+            "load_5": 0.2,
+            "load_15": 0.3,
+            "rx_bytes": 111,
+            "tx_bytes": 222,
+        }
+        payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        ts = str(int(time.time()))
+        nonce = "nonce-agent-mismatch"
+        signature = hmac.new(token.encode("utf-8"), f"{ts}.{nonce}.{payload_json}".encode("utf-8"), hashlib.sha256).hexdigest()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-PCM-Timestamp": ts,
+            "X-PCM-Nonce": nonce,
+            "X-PCM-Signature": signature,
+            "Content-Type": "application/json",
+        }
+        ingest_resp = client.post("/api/v1/ingest", content=payload_json, headers=headers)
+        assert ingest_resp.status_code == 409
+        assert ingest_resp.json()["detail"] == "Identity binding mismatch"

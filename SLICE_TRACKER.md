@@ -602,8 +602,8 @@ This reflects current behavior in code so future slices extend, not contradict, 
 - [x] Operator authentication mechanism implemented
 - [x] Authorization checks enforced on mutating/security routes
 - [x] Audit actor attribution bound to authenticated principal
-- [ ] Stable node identity binding implemented for refresh/ingest/enrollment
-- [ ] Backward-compatible identity migration path implemented
+- [x] Stable node identity binding implemented for refresh/ingest/enrollment
+- [x] Backward-compatible identity migration path implemented
 - [ ] Structured background-loop error telemetry implemented
 - [x] Tests added and green
 - [ ] Images published (GHCR)
@@ -643,6 +643,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 #### Slice 6.2 - Node Identity Binding Migration
 
+**Status:** `done`  
 **Objective:** Remove hostname-only trust assumptions for refresh/ingest/enrollment paths.
 
 **Scope:**
@@ -735,6 +736,26 @@ This reflects current behavior in code so future slices extend, not contradict, 
     - spoofed actor ignored test coverage
     - read-only endpoint regression test coverage
     - local suite status: `dashboard: 31 passed`, `agent: 9 passed`
+- 2026-03-12
+  - Slice 6.2 completed:
+    - Added stable `agent_id` identity binding across enrollment, token refresh, and ingest paths.
+    - Implemented dual-path compatibility:
+      - prefer `agent_id` when present
+      - fallback to hostname for legacy agents during migration window
+    - Added identity conflict protections:
+      - reject agent-id rebinding collisions (`409 Agent identity conflict`)
+      - reject agent-id/hostname mismatch on refresh and ingest (`409 Identity binding mismatch`)
+    - Added DB support:
+      - `nodes.agent_id`
+      - unique partial index for non-empty `agent_id`
+    - Added agent-side durable identity:
+      - `AGENT_ID` and `AGENT_ID_FILE`
+      - generated/persisted `agent_id` fallback when unset
+      - identity propagated through enroll/refresh/push
+  - Test evidence:
+    - identity conflict and mismatch tests on dashboard APIs
+    - migration/index coverage in DB migration tests
+    - agent identity persistence + payload propagation tests
 
 ---
 

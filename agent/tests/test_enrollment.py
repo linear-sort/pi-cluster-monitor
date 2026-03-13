@@ -7,7 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from app.config import AgentSettings
-from app.enrollment import enrollment_loop, load_token_from_file, save_token_to_file
+from app.enrollment import (
+    enrollment_loop,
+    get_or_create_agent_id,
+    load_agent_id,
+    load_token_from_file,
+    save_agent_id,
+    save_token_to_file,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -17,6 +24,18 @@ def test_load_and_save_token_file(tmp_path: Path) -> None:
     assert load_token_from_file(token_file) is None
     save_token_to_file(token_file, "abc123")
     assert load_token_from_file(token_file) == "abc123"
+
+
+def test_get_or_create_agent_id_persists(tmp_path: Path) -> None:
+    id_file = tmp_path / "agent_id.txt"
+    settings = AgentSettings(agent_id="", agent_id_file=id_file)
+    generated = get_or_create_agent_id(settings)
+    assert generated.startswith("agent-")
+    assert load_agent_id(id_file) == generated
+
+    save_agent_id(id_file, "agent-fixed")
+    reused = get_or_create_agent_id(settings)
+    assert reused == "agent-fixed"
 
 
 @pytest.mark.asyncio
@@ -34,13 +53,16 @@ async def test_enrollment_loop_sets_runtime_and_persisted_token(monkeypatch, tmp
         token_refresh_seconds=60,
         token_file=token_file,
     )
-    app = SimpleNamespace(state=SimpleNamespace(settings=settings, auth_token="fallback-token"))
+    app = SimpleNamespace(state=SimpleNamespace(settings=settings, auth_token="fallback-token", agent_id="agent-1"))
 
     attempts = {"count": 0}
     saved = {"token": None}
     token_saved_event = asyncio.Event()
 
-    async def fake_enroll_once(settings: AgentSettings, ip_address: str | None = None) -> tuple[str | None, int | None]:  # noqa: ARG001
+    async def fake_enroll_once(
+        settings: AgentSettings, agent_id: str, ip_address: str | None = None
+    ) -> tuple[str | None, int | None]:  # noqa: ARG001
+        assert agent_id == "agent-1"
         attempts["count"] += 1
         if attempts["count"] == 1:
             raise RuntimeError("temporary")
@@ -81,11 +103,12 @@ async def test_enrollment_loop_refreshes_existing_token(monkeypatch, tmp_path: P
         token_refresh_seconds=1,
         token_file=token_file,
     )
-    app = SimpleNamespace(state=SimpleNamespace(settings=settings, auth_token="old-token"))
+    app = SimpleNamespace(state=SimpleNamespace(settings=settings, auth_token="old-token", agent_id="agent-1"))
 
     async def fake_refresh_once(
-        settings: AgentSettings, token: str, token_version: int | None = None
+        settings: AgentSettings, token: str, agent_id: str, token_version: int | None = None
     ) -> tuple[str | None, int | None]:  # noqa: ARG001
+        assert agent_id == "agent-1"
         if token == "old-token":
             return "new-token", 4
         return token, token_version

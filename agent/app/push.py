@@ -20,10 +20,11 @@ def build_ingest_signature(token: str, timestamp: str, nonce: str, payload_json:
     return hmac.new(token.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-async def push_once(settings: AgentSettings, token: str, token_version: int = 1) -> dict:
+async def push_once(settings: AgentSettings, token: str, agent_id: str, token_version: int = 1) -> dict:
     metrics = collect_metrics(agent_name=settings.name)
     payload = metrics.model_dump(mode="json")
     payload["hostname"] = settings.name or socket.gethostname()
+    payload["agent_id"] = agent_id
     payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     timestamp = str(int(time.time()))
     nonce = secrets.token_urlsafe(12)
@@ -51,9 +52,10 @@ async def push_loop(app) -> None:
     while True:
         try:
             token = str(getattr(app.state, "auth_token", "") or "").strip()
+            agent_id = str(getattr(app.state, "agent_id", "") or "").strip()
             token_version = int(getattr(app.state, "token_version", 1) or 1)
-            if settings.push_enabled and settings.dashboard_url and token:
-                await push_once(settings=settings, token=token, token_version=token_version)
+            if settings.push_enabled and settings.dashboard_url and token and agent_id:
+                await push_once(settings=settings, token=token, agent_id=agent_id, token_version=token_version)
         except asyncio.CancelledError:
             raise
         except Exception:

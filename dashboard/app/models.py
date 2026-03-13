@@ -47,6 +47,7 @@ class ClusterStats(BaseModel):
 class EnrollmentRequest(BaseModel):
     enroll_secret: str
     hostname: str = Field(min_length=1, max_length=255)
+    agent_id: str | None = Field(default=None, max_length=120)
     name: str | None = None
     ip_address: str | None = None
     agent_port: int = 8001
@@ -56,6 +57,7 @@ class EnrollmentRequest(BaseModel):
 
 class EnrollmentResponse(BaseModel):
     node_id: int
+    agent_id: str | None = None
     token: str
     token_version: int
     status: str
@@ -63,6 +65,7 @@ class EnrollmentResponse(BaseModel):
 
 class TokenRefreshRequest(BaseModel):
     hostname: str = Field(min_length=1, max_length=255)
+    agent_id: str | None = Field(default=None, max_length=120)
     token_version: int | None = None
 
 
@@ -76,6 +79,7 @@ class TokenRefreshResponse(BaseModel):
 
 class IngestMetricsRequest(BaseModel):
     hostname: str
+    agent_id: str | None = Field(default=None, max_length=120)
     timestamp: datetime
     cpu_percent: float
     memory_percent: float

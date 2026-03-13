@@ -113,7 +113,7 @@ def _cluster_nodes(conn) -> list[dict]:
         conn,
         """
         SELECT
-            n.id, n.name, n.hostname, n.ip_address, n.role, n.enabled, n.last_status, n.last_seen_at,
+            n.id, n.name, n.hostname, n.agent_id, n.ip_address, n.role, n.enabled, n.last_status, n.last_seen_at,
             n.enrollment_status, n.enrolled_at, n.token_expires_at, n.token_version, n.revoked_at, n.revoked_reason,
             n.use_tls, n.tls_verify, n.tls_ca_path, n.tls_fingerprint_sha256,
             n.collect_mode,
@@ -179,6 +179,36 @@ def _validate_node_token(node: dict, token: str) -> bool:
     if token == (node.get("previous_token") or "") and _is_future_iso(node.get("previous_token_expires_at")):
         return True
     return False
+
+
+def _normalize_agent_id(value: str | None) -> str | None:
+    cleaned = (value or "").strip()
+    return cleaned or None
+
+
+def _find_node_by_identity(conn, hostname: str, agent_id: str | None) -> dict | None:
+    normalized_agent_id = _normalize_agent_id(agent_id)
+    if normalized_agent_id:
+        return fetch_one_dict(
+            conn,
+            """
+            SELECT id, hostname, agent_id, token, token_expires_at, previous_token, previous_token_expires_at, token_version, revoked_at
+            FROM nodes
+            WHERE agent_id = ?
+            LIMIT 1
+            """,
+            (normalized_agent_id,),
+        )
+    return fetch_one_dict(
+        conn,
+        """
+        SELECT id, hostname, agent_id, token, token_expires_at, previous_token, previous_token_expires_at, token_version, revoked_at
+        FROM nodes
+        WHERE hostname = ?
+        LIMIT 1
+        """,
+        (hostname.strip(),),
+    )
 
 
 @router.get("/", include_in_schema=False)
@@ -556,18 +586,11 @@ async def api_ingest_metrics(request: Request, payload: IngestMetricsRequest) ->
     signed_message = f"{timestamp_header}.{nonce_header}.{body_for_signature}"
 
     with get_conn(_db_path(request)) as conn:
-        node = fetch_one_dict(
-            conn,
-            """
-            SELECT id, token, token_expires_at, previous_token, previous_token_expires_at, token_version, revoked_at
-            FROM nodes
-            WHERE hostname = ?
-            LIMIT 1
-            """,
-            (payload.hostname.strip(),),
-        )
+        node = _find_node_by_identity(conn, hostname=payload.hostname, agent_id=payload.agent_id)
         if not node:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
+        if _normalize_agent_id(payload.agent_id) and payload.hostname.strip() != str(node.get("hostname") or "").strip():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Identity binding mismatch")
         if not _validate_node_token(node, token):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
         if token_version_header:
@@ -662,79 +685,107 @@ def api_agent_enroll(request: Request, payload: EnrollmentRequest) -> Enrollment
     expires_at_iso = token_expiry_iso(request.app.state.settings.token_ttl_seconds)
     resolved_ip = payload.ip_address or (request.client.host if request.client else "unknown")
     resolved_name = (payload.name or payload.hostname).strip()
+    normalized_agent_id = _normalize_agent_id(payload.agent_id)
+
+    node_id = 0
+    try:
+        with get_conn(_db_path(request)) as conn:
+            existing = None
+            if normalized_agent_id:
+                existing = fetch_one_dict(
+                    conn,
+                    """
+                    SELECT id, hostname, agent_id
+                    FROM nodes
+                    WHERE agent_id = ?
+                    LIMIT 1
+                    """,
+                    (normalized_agent_id,),
+                )
+            if not existing:
+                existing = fetch_one_dict(
+                    conn,
+                    """
+                    SELECT id, hostname, agent_id
+                    FROM nodes
+                    WHERE hostname = ? OR ip_address = ?
+                    ORDER BY id ASC
+                    LIMIT 1
+                    """,
+                    (payload.hostname.strip(), resolved_ip),
+                )
+            if existing and normalized_agent_id:
+                bound_agent_id = _normalize_agent_id(existing.get("agent_id"))
+                if bound_agent_id and bound_agent_id != normalized_agent_id:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent identity conflict")
+            if existing:
+                node_id = int(existing["id"])
+                conn.execute(
+                    """
+                    UPDATE nodes
+                    SET name = ?, hostname = ?, agent_id = ?, ip_address = ?, token = ?, role = ?, agent_port = ?,
+                        poll_interval_seconds = ?, enabled = 1, enrollment_status = 'enrolled',
+                        enrolled_at = ?, token_issued_at = ?, token_expires_at = ?,
+                        previous_token = NULL, previous_token_expires_at = NULL,
+                        token_version = CASE WHEN token_version IS NULL THEN 1 ELSE token_version + 1 END,
+                        revoked_at = NULL, revoked_reason = NULL, revoked_by = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        resolved_name,
+                        payload.hostname.strip(),
+                        normalized_agent_id if normalized_agent_id else _normalize_agent_id(existing.get("agent_id")),
+                        resolved_ip,
+                        issued_token,
+                        payload.role.strip() or "worker",
+                        int(payload.agent_port),
+                        max(3, int(payload.poll_interval_seconds)),
+                        now_iso,
+                        now_iso,
+                        expires_at_iso,
+                        now_iso,
+                        node_id,
+                    ),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO nodes (
+                        name, hostname, agent_id, ip_address, token, role, agent_port, poll_interval_seconds,
+                        enabled, enrollment_status, enrolled_at, token_issued_at, token_expires_at,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'enrolled', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_name,
+                        payload.hostname.strip(),
+                        normalized_agent_id,
+                        resolved_ip,
+                        issued_token,
+                        payload.role.strip() or "worker",
+                        int(payload.agent_port),
+                        max(3, int(payload.poll_interval_seconds)),
+                        now_iso,
+                        now_iso,
+                        expires_at_iso,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                node_id = int(cursor.lastrowid)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent identity conflict") from exc
 
     with get_conn(_db_path(request)) as conn:
-        existing = fetch_one_dict(
-            conn,
-            """
-            SELECT id
-            FROM nodes
-            WHERE hostname = ? OR ip_address = ?
-            ORDER BY id ASC
-            LIMIT 1
-            """,
-            (payload.hostname.strip(), resolved_ip),
-        )
-        if existing:
-            node_id = int(existing["id"])
-            conn.execute(
-                """
-                UPDATE nodes
-                SET name = ?, hostname = ?, ip_address = ?, token = ?, role = ?, agent_port = ?,
-                    poll_interval_seconds = ?, enabled = 1, enrollment_status = 'enrolled',
-                    enrolled_at = ?, token_issued_at = ?, token_expires_at = ?,
-                    previous_token = NULL, previous_token_expires_at = NULL,
-                    token_version = CASE WHEN token_version IS NULL THEN 1 ELSE token_version + 1 END,
-                    revoked_at = NULL, revoked_reason = NULL, revoked_by = NULL,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    resolved_name,
-                    payload.hostname.strip(),
-                    resolved_ip,
-                    issued_token,
-                    payload.role.strip() or "worker",
-                    int(payload.agent_port),
-                    max(3, int(payload.poll_interval_seconds)),
-                    now_iso,
-                    now_iso,
-                    expires_at_iso,
-                    now_iso,
-                    node_id,
-                ),
-            )
-        else:
-            cursor = conn.execute(
-                """
-                INSERT INTO nodes (
-                    name, hostname, ip_address, token, role, agent_port, poll_interval_seconds,
-                    enabled, enrollment_status, enrolled_at, token_issued_at, token_expires_at,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'enrolled', ?, ?, ?, ?, ?)
-                """,
-                (
-                    resolved_name,
-                    payload.hostname.strip(),
-                    resolved_ip,
-                    issued_token,
-                    payload.role.strip() or "worker",
-                    int(payload.agent_port),
-                    max(3, int(payload.poll_interval_seconds)),
-                    now_iso,
-                    now_iso,
-                    expires_at_iso,
-                    now_iso,
-                    now_iso,
-                ),
-            )
-            node_id = int(cursor.lastrowid)
-
-    with get_conn(_db_path(request)) as conn:
-        token_version = int(
-            fetch_one_dict(conn, "SELECT token_version FROM nodes WHERE id = ? LIMIT 1", (node_id,))["token_version"]
-        )
-    return EnrollmentResponse(node_id=node_id, token=issued_token, token_version=token_version, status="enrolled")
+        row = fetch_one_dict(conn, "SELECT token_version, agent_id FROM nodes WHERE id = ? LIMIT 1", (node_id,))
+    return EnrollmentResponse(
+        node_id=node_id,
+        agent_id=_normalize_agent_id(row.get("agent_id") if row else None),
+        token=issued_token,
+        token_version=int((row or {}).get("token_version") or 1),
+        status="enrolled",
+    )
 
 
 @router.post("/api/v1/token/refresh", response_model=TokenRefreshResponse)
@@ -747,18 +798,11 @@ def api_token_refresh(request: Request, payload: TokenRefreshRequest) -> TokenRe
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
 
     with get_conn(_db_path(request)) as conn:
-        node = fetch_one_dict(
-            conn,
-            """
-            SELECT id, token, token_expires_at, previous_token, previous_token_expires_at, token_version, revoked_at
-            FROM nodes
-            WHERE hostname = ?
-            LIMIT 1
-            """,
-            (payload.hostname.strip(),),
-        )
+        node = _find_node_by_identity(conn, hostname=payload.hostname, agent_id=payload.agent_id)
         if not node:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
+        if _normalize_agent_id(payload.agent_id) and payload.hostname.strip() != str(node.get("hostname") or "").strip():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Identity binding mismatch")
         if node.get("revoked_at"):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
         if payload.token_version is not None and int(node.get("token_version") or 1) != int(payload.token_version):

@@ -250,6 +250,8 @@ docker compose -f docker-compose.agent.dev.yml up -d --build
 - `AGENT_PUSH_ENABLED` (default: `false`)
 - `AGENT_PUSH_INTERVAL_SECONDS` (default: `10`)
 - `AGENT_TOKEN_FILE` (default: `agent_token.txt`)
+- `AGENT_ID` (optional stable identity override)
+- `AGENT_ID_FILE` (default: `agent_id.txt`; persisted identity fallback)
 
 ## API Endpoints
 
@@ -298,6 +300,11 @@ Push ingest signature headers:
 - `X-PCM-Nonce`
 - `X-PCM-Signature`
 - `X-PCM-Token-Version` (optional hardening check against server-side token version)
+
+Identity migration note:
+
+- Agents now send `agent_id` on enroll/refresh/ingest.
+- Dashboard prefers `agent_id` binding when present and falls back to hostname for legacy agents during migration.
 
 ## Database
 

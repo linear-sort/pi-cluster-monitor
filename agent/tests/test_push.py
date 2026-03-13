@@ -69,10 +69,11 @@ async def test_push_once_posts_signed_payload(monkeypatch) -> None:
 
     monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
 
-    resp = await push_once(settings=settings, token="tok-123", token_version=7)
+    resp = await push_once(settings=settings, token="tok-123", agent_id="agent-xyz", token_version=7)
     assert resp["status"] == "accepted"
     assert captured["url"].endswith("/api/v1/ingest")
     assert "X-PCM-Signature" in captured["headers"]
     assert captured["headers"]["X-PCM-Token-Version"] == "7"
     payload = json.loads(captured["content"])
     assert payload["hostname"] == "pi-agent"
+    assert payload["agent_id"] == "agent-xyz"

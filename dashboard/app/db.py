@@ -21,6 +21,7 @@ def ensure_db(db_path: Path) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 hostname TEXT NOT NULL,
+                agent_id TEXT NULL,
                 ip_address TEXT NOT NULL,
                 token TEXT NOT NULL,
                 token_version INTEGER NOT NULL DEFAULT 1,
@@ -171,6 +172,8 @@ def _ensure_nodes_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE nodes ADD COLUMN enrollment_status TEXT NOT NULL DEFAULT 'manual'")
     if "enrolled_at" not in columns:
         conn.execute("ALTER TABLE nodes ADD COLUMN enrolled_at TEXT NULL")
+    if "agent_id" not in columns:
+        conn.execute("ALTER TABLE nodes ADD COLUMN agent_id TEXT NULL")
     if "token_issued_at" not in columns:
         conn.execute("ALTER TABLE nodes ADD COLUMN token_issued_at TEXT NULL")
     if "token_expires_at" not in columns:
@@ -207,6 +210,7 @@ def _ensure_nodes_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE nodes ADD COLUMN tls_fingerprint_sha256 TEXT NULL")
     if "collect_mode" not in columns:
         conn.execute("ALTER TABLE nodes ADD COLUMN collect_mode TEXT NOT NULL DEFAULT 'pull'")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_agent_id_unique ON nodes(agent_id) WHERE agent_id IS NOT NULL AND agent_id <> ''")
 
     metric_cols = {
         row[1]

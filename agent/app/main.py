@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from dotenv import load_dotenv
 
 from app.config import get_settings
-from app.enrollment import enrollment_loop, load_token_from_file
+from app.enrollment import enrollment_loop, get_or_create_agent_id, load_token_from_file
 from app.push import push_loop
 from app.routes import router
 
@@ -19,6 +19,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / '.env')
 async def lifespan(app: FastAPI):
     settings = get_settings()
     app.state.settings = settings
+    app.state.agent_id = get_or_create_agent_id(settings)
     app.state.auth_token = load_token_from_file(settings.token_file) or settings.token
     app.state.token_version = 1
     app.state.enrollment_task = None
