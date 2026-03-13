@@ -185,7 +185,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ## Slice 1 - Automatic Auth Bootstrap
 
-**Status:** `done`  
+**Status:** `released`  
 **Goal:** Remove manual token distribution by enabling one-step agent enrollment.
 
 ### Deliverables
@@ -608,7 +608,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 - [x] Auth policy parity enforced for HTML mutation surfaces
 - [x] Structured background-loop error telemetry implemented
 - [x] Tests added and green
-- [ ] Images published (GHCR)
+- [x] Images published (GHCR)
 - [ ] Compose env tags updated
 - [ ] Post-deploy smoke validation completed
 
@@ -923,6 +923,11 @@ This reflects current behavior in code so future slices extend, not contradict, 
       - push loop telemetry coverage (failure + recovery)
       - diagnostics endpoint payload contract coverage
       - local suite status: `12 passed`
+- 2026-03-13
+  - Slice 6 promoted from `done` to `released`.
+  - CI/publish evidence for `v0.6.3-slice6-telemetry-diagnostics`:
+    - `CI Tests` completed successfully
+    - `Build and Publish Docker Images` completed successfully
 
 ---
 
