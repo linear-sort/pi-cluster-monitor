@@ -534,7 +534,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ## Slice 6 - Control Plane Security + Identity Integrity
 
-**Status:** `in_progress`  
+**Status:** `done`  
 **Goal:** Close control-plane security gaps by enforcing operator authorization, hardening node identity semantics, and improving failure observability for background runtime loops.
 
 ### Deliverables
@@ -604,13 +604,15 @@ This reflects current behavior in code so future slices extend, not contradict, 
 - [x] Audit actor attribution bound to authenticated principal
 - [x] Stable node identity binding implemented for refresh/ingest/enrollment
 - [x] Backward-compatible identity migration path implemented
-- [ ] Structured background-loop error telemetry implemented
+- [x] Secret exposure minimized across UI/API node payloads
+- [x] Auth policy parity enforced for HTML mutation surfaces
+- [x] Structured background-loop error telemetry implemented
 - [x] Tests added and green
 - [ ] Images published (GHCR)
 - [ ] Compose env tags updated
 - [ ] Post-deploy smoke validation completed
 
-### Execution Breakdown (6.1 / 6.2 / 6.3)
+### Execution Breakdown (6.1 / 6.2 / 6.3 / 6.4)
 
 #### Slice 6.1 - Control Plane Auth Boundary
 
@@ -672,6 +674,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 #### Slice 6.3 - Runtime Error Telemetry + Operational Diagnostics
 
+**Status:** `done`  
 **Objective:** Make background failures observable and actionable without noisy false positives.
 
 **Scope:**
@@ -700,13 +703,125 @@ This reflects current behavior in code so future slices extend, not contradict, 
 - New auth model semantics (6.1 completed already).
 - Identity schema migration logic (6.2 completed already).
 
+#### Slice 6.4 - Surface Auth Parity + Secret Exposure Minimization
+
+**Status:** `done`  
+**Objective:** Eliminate residual credential exposure and ensure web/UI mutation paths follow the same auth model as protected API mutations.
+
+**Scope:**
+- Enforce operator auth/role checks on HTML mutation routes and settings actions:
+  - `/settings/nodes/save`
+  - `/settings/nodes/{id}/toggle`
+  - any other state-changing UI routes
+- Define and enforce a response redaction contract for node objects:
+  - never return `token` or `previous_token` in read APIs/UI payloads
+  - only expose token lifecycle metadata required by operators
+- Add explicit public/private API classification and guardrails:
+  - cluster health/summary can remain public only if documented and intentional
+  - sensitive detail routes require operator auth
+- Remove or deprecate request-body `actor` fields from API schemas where principal is auth-derived.
+
+**Acceptance Criteria:**
+- No read endpoint or template context exposes bearer secrets in plaintext.
+- HTML mutation routes reject unauthenticated calls (`401`) and insufficient role (`403`).
+- API schema and runtime behavior are aligned (no spoofable or ignored identity fields presented as authoritative inputs).
+- Regression tests confirm dashboard UX still works with authenticated operator sessions/tokens.
+
+**Tests Required:**
+- redaction tests for `/api/v1/nodes/{id}` and related node-detail payloads
+- settings route authorization tests (save/toggle) with role matrix coverage
+- template rendering tests confirming token secrets are not present in rendered output
+- contract tests ensuring request-body `actor` is absent or ignored consistently with docs
+
+**Out of Scope:**
+- Loop telemetry/counters and diagnostics pipeline (6.3).
+- New identity-migration protocol changes beyond existing `agent_id` contract (6.2).
+
+**Implementation Ticket Map (Planning Only):**
+
+- `S6.4-T1` Route auth parity for HTML mutations
+  - Files:
+    - `dashboard/app/routes/web.py`
+    - `dashboard/tests/test_web.py`
+  - Work:
+    - add `require_operator(...)` checks for settings mutation endpoints (`save`, `toggle`, and any state-changing form handlers)
+    - define minimum role per action and keep parity with API mutation policy
+  - Done when:
+    - unauthorized HTML mutations return `401`
+    - insufficient role returns `403`
+    - existing authorized UX flows still pass integration tests
+
+- `S6.4-T2` Node payload redaction contract
+  - Files:
+    - `dashboard/app/routes/web.py`
+    - `dashboard/templates/node_detail.html`
+    - `dashboard/templates/settings.html`
+    - `dashboard/templates/partials/node_form.html`
+    - `dashboard/tests/test_web.py`
+  - Work:
+    - replace `SELECT * FROM nodes` read paths with explicit allowlisted columns
+    - enforce API/template contract that excludes `token` and `previous_token` from read payloads
+    - preserve only operator-safe metadata (expiry/version/revocation fields) needed by UI/API
+  - Done when:
+    - no read API response includes bearer token secrets
+    - rendered HTML does not expose token secrets in DOM/source
+    - tests assert secret keys are absent from serialized payloads
+
+- `S6.4-T3` Model/API contract cleanup (actor deprecation)
+  - Files:
+    - `dashboard/app/models.py`
+    - `dashboard/app/routes/web.py`
+    - `dashboard/tests/test_web.py`
+    - `README.md`
+  - Work:
+    - deprecate/remove request-body `actor` fields for protected mutation endpoints
+    - ensure docs and examples show principal-derived actor behavior only
+    - preserve backward compatibility with explicit ignore behavior only if needed for one release window
+  - Done when:
+    - OpenAPI/request schemas do not imply caller-controlled audit actor
+    - docs and runtime behavior are consistent
+    - compatibility behavior (if retained) is tested and time-boxed
+
+- `S6.4-T4` Protected/public endpoint policy codification
+  - Files:
+    - `dashboard/app/routes/web.py`
+    - `dashboard/tests/test_web.py`
+    - `README.md`
+    - `SLICE_TRACKER.md`
+  - Work:
+    - define canonical list of public read endpoints vs operator-protected endpoints
+    - enforce route-level checks and add regression coverage so policy drift is caught early
+  - Done when:
+    - policy is documented in one source of truth and reflected in route behavior
+    - tests fail on accidental protection removal or accidental public exposure
+
+**Test Matrix (Must Pass for 6.4):**
+
+- auth matrix:
+  - no token -> `401` on HTML/API mutations
+  - viewer token -> `403` on operator/admin mutations
+  - operator/admin token -> success on authorized actions
+- redaction matrix:
+  - `/api/v1/nodes`, `/api/v1/nodes/{id}`, and HTML settings/detail contexts exclude bearer secrets
+  - ensure legacy fields that remain exposed are explicitly allowlisted
+- contract matrix:
+  - request schemas/docs match runtime behavior for actor attribution
+  - deprecated input fields (if temporarily accepted) do not affect persisted audit actor
+
+**Recommended PR Order for 6.4:**
+
+1. `PR-A` -> `S6.4-T1` (route auth parity + tests)
+2. `PR-B` -> `S6.4-T2` (redaction contract + tests)
+3. `PR-C` -> `S6.4-T3` + `S6.4-T4` (schema/docs/policy codification + regression suite)
+
 ### Recommended Sequence and Gates
 
 - Sequence: `6.1 -> 6.2 -> 6.3` (security boundary first, identity second, observability third).
 - Merge gate between sub-slices:
   - 6.1 must land before any additional fleet mutation features.
   - 6.2 must land before removing legacy hostname fallback.
-  - 6.3 must land before declaring Slice 6 `done`.
+  - 6.4 should land before any external exposure of operator/read APIs.
+  - 6.3 and 6.4 must both land before declaring Slice 6 `done`.
 - Release gate:
   - promote to `released` only after mixed-fleet migration smoke + operator auth smoke are both recorded.
 
@@ -756,6 +871,58 @@ This reflects current behavior in code so future slices extend, not contradict, 
     - identity conflict and mismatch tests on dashboard APIs
     - migration/index coverage in DB migration tests
     - agent identity persistence + payload propagation tests
+- 2026-03-12
+  - Post-6.2 architecture review identified remaining gaps not yet captured as a dedicated sub-slice:
+    - web settings mutation routes still lack explicit operator authorization parity
+    - node detail read surfaces still query/pass full node records (`SELECT *`) including secret token columns
+    - request models still include optional `actor` fields even though actor is principal-derived at runtime
+  - Added Slice 6.4 to track auth-surface parity and secret exposure minimization.
+  - CI evidence: N/A (planning/analysis update)
+  - Deploy/smoke evidence: N/A (planning only)
+- 2026-03-12
+  - Added planning-only ticket decomposition for Slice 6.4 (`S6.4-T1` to `S6.4-T4`):
+    - file-level implementation map
+    - acceptance criteria per ticket
+    - mandatory 6.4 test matrix
+    - recommended PR ordering for low-risk rollout
+  - CI evidence: N/A (planning only)
+  - Deploy/smoke evidence: N/A (planning only)
+- 2026-03-12
+  - Slice 6.4 completed:
+    - Enforced operator auth parity on HTML mutation routes (`/settings/nodes/save`, `/settings/nodes/{id}/toggle`).
+    - Added viewer-level protection to sensitive detail routes (`/nodes/{id}`, `/api/v1/nodes/{id}`, `/api/v1/nodes/{id}/metrics`, `/api/v1/webhooks/deliveries`).
+    - Implemented node-read redaction contract by removing `token`/`previous_token` exposure from API payloads and template contexts.
+    - Updated node form behavior to avoid displaying existing bearer token values and preserve token on update when left blank.
+    - Removed `actor` fields from protected mutation request schemas and validated OpenAPI contract parity.
+    - Codified protected/public endpoint policy in README.
+  - Test evidence:
+    - settings mutation auth matrix (`401` unauth, `403` viewer, success for operator/admin)
+    - sensitive detail route auth regression coverage
+    - redaction checks for API payloads and rendered HTML/template responses
+    - OpenAPI schema checks confirming no caller-controlled `actor` mutation fields
+- 2026-03-13
+  - Slice 6.3 completed:
+    - Replaced silent background-loop exception swallowing with structured logging in:
+      - dashboard poller paths (poll failures, services fetch failures, webhook delivery failures)
+      - agent enrollment loop
+      - agent push loop
+    - Added bounded runtime loop telemetry counters and recent error buffers:
+      - dashboard poller diagnostics include poll/service/cleanup/webhook counters and recent error samples
+      - agent runtime diagnostics include enrollment and push loop counters + last error
+    - Added diagnostics API surfaces:
+      - dashboard `GET /api/v1/diagnostics/loops` (viewer+ protected)
+      - agent `GET /api/v1/diagnostics/loops` (agent bearer-token protected)
+  - Test evidence:
+    - dashboard:
+      - diagnostics endpoint auth + payload coverage
+      - poller telemetry progression coverage across success/failure paths
+      - webhook diagnostics coverage for delivery attempts/failures
+      - local suite status: `41 passed`
+    - agent:
+      - enrollment loop telemetry coverage (failure + recovery)
+      - push loop telemetry coverage (failure + recovery)
+      - diagnostics endpoint payload contract coverage
+      - local suite status: `12 passed`
 
 ---
 
@@ -795,3 +962,10 @@ On each PR:
   - Identified observability gap:
     - agent enroll/refresh/push loops swallow runtime exceptions, reducing incident diagnosability.
   - These risks are now tracked as Slice 6 scope.
+- 2026-03-12 post-6.2 security surface audit:
+  - Confirmed previously identified 6.1 and 6.2 risks are implemented in code paths for protected mutation APIs and identity binding.
+  - Identified remaining exposure risks:
+    - settings HTML mutation routes are not yet covered by the same explicit operator auth checks as protected API mutation routes
+    - some node read payloads still originate from `SELECT * FROM nodes`, increasing accidental secret-leak risk
+    - API models retain optional `actor` request fields despite principal-derived audit attribution
+  - These residual risks are now tracked as Slice 6.4 scope.

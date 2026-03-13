@@ -4,7 +4,15 @@
   <label>Name <input name="name" required value="{{ node.name if node else '' }}" /></label>
   <label>Hostname <input name="hostname" required value="{{ node.hostname if node else '' }}" /></label>
   <label>IP Address <input name="ip_address" required value="{{ node.ip_address if node else '' }}" /></label>
-  <label>Token <input name="token" required value="{{ node.token if node else '' }}" /></label>
+  <label>
+    Token
+    <input
+      name="token"
+      {% if not node %}required{% endif %}
+      value=""
+      placeholder="{% if node %}Leave blank to keep existing token{% else %}Enter node token{% endif %}"
+    />
+  </label>
   <label>Role <input name="role" value="{{ node.role if node else 'worker' }}" /></label>
   <label>Agent Port <input name="agent_port" type="number" value="{{ node.agent_port if node else default_port }}" /></label>
   <label>

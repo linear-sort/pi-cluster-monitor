@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 import secrets
 import socket
@@ -9,6 +10,19 @@ from typing import Any
 import httpx
 
 from app.config import AgentSettings
+
+logger = logging.getLogger(__name__)
+
+
+def _loop_telemetry_bucket(app) -> dict[str, Any]:
+    telemetry_root = getattr(app.state, "loop_telemetry", None)
+    if not isinstance(telemetry_root, dict):
+        telemetry_root = {}
+        setattr(app.state, "loop_telemetry", telemetry_root)
+    return telemetry_root.setdefault(
+        "enrollment",
+        {"attempts": 0, "successes": 0, "failures": 0, "last_error": ""},
+    )
 
 
 def load_token_from_file(token_file: Path) -> str | None:
@@ -109,6 +123,8 @@ async def enrollment_loop(app) -> None:
 
     while True:
         try:
+            telemetry = _loop_telemetry_bucket(app)
+            telemetry["attempts"] = int(telemetry.get("attempts", 0)) + 1
             current_token = str(getattr(app.state, "auth_token", "") or "").strip()
             current_version = int(getattr(app.state, "token_version", 1) or 1)
             agent_id = str(getattr(app.state, "agent_id", "") or "").strip()
@@ -119,6 +135,8 @@ async def enrollment_loop(app) -> None:
                     app.state.auth_token = token
                     app.state.token_version = int(token_version or 1)
                     save_token_to_file(settings.token_file, token)
+                    telemetry["successes"] = int(telemetry.get("successes", 0)) + 1
+                    telemetry["last_error"] = ""
             elif settings.token_refresh_enabled and settings.dashboard_url and current_token:
                 token, token_version = await refresh_once(
                     settings=settings,
@@ -130,9 +148,14 @@ async def enrollment_loop(app) -> None:
                     app.state.auth_token = token
                     app.state.token_version = int(token_version or current_version)
                     save_token_to_file(settings.token_file, token)
+                    telemetry["successes"] = int(telemetry.get("successes", 0)) + 1
+                    telemetry["last_error"] = ""
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as exc:
+            telemetry = _loop_telemetry_bucket(app)
+            telemetry["failures"] = int(telemetry.get("failures", 0)) + 1
+            telemetry["last_error"] = str(exc)[:300]
+            logger.exception("agent enrollment loop iteration failed")
         sleep_seconds = settings.token_refresh_seconds if settings.token_refresh_enabled else settings.enroll_retry_seconds
         await asyncio.sleep(max(3, sleep_seconds))

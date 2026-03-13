@@ -152,3 +152,6 @@ async def test_webhook_dispatch_failure_transitions_to_failed(monkeypatch, tmp_p
         assert row["status"] == "failed"
         assert row["attempt_count"] == 1
         assert "network_down" in str(row["last_error"])
+
+    diagnostics = poller.get_diagnostics()
+    assert diagnostics["webhook"]["attempts"] >= 1

@@ -98,11 +98,12 @@ def test_node_detail_metrics_and_alerts_api(tmp_path: Path) -> None:
     db_path = tmp_path / "cluster.db"
     os.environ["DASHBOARD_DB_PATH"] = str(db_path)
     os.environ["DASHBOARD_POLL_BASE_SECONDS"] = "1"
+    _set_operator_creds()
 
     with TestClient(app) as client:
         node_id = _seed_node_with_data(db_path)
 
-        node_detail = client.get(f"/api/v1/nodes/{node_id}")
+        node_detail = client.get(f"/api/v1/nodes/{node_id}", headers=_op_headers("viewer-token"))
         assert node_detail.status_code == 200
         payload = node_detail.json()
         assert payload["node"]["name"] == "pi-1"
@@ -110,7 +111,7 @@ def test_node_detail_metrics_and_alerts_api(tmp_path: Path) -> None:
         assert len(payload["alerts"]) >= 1
         assert len(payload["services"]) == 1
 
-        metrics = client.get(f"/api/v1/nodes/{node_id}/metrics?minutes=120")
+        metrics = client.get(f"/api/v1/nodes/{node_id}/metrics?minutes=120", headers=_op_headers("viewer-token"))
         assert metrics.status_code == 200
         metrics_payload = metrics.json()
         assert len(metrics_payload["labels"]) == 1
@@ -127,6 +128,7 @@ def test_settings_save_enabled_false_string(tmp_path: Path) -> None:
     db_path = tmp_path / "cluster.db"
     os.environ["DASHBOARD_DB_PATH"] = str(db_path)
     os.environ["DASHBOARD_POLL_BASE_SECONDS"] = "1"
+    _set_operator_creds()
 
     with TestClient(app) as client:
         response = client.post(
@@ -141,6 +143,7 @@ def test_settings_save_enabled_false_string(tmp_path: Path) -> None:
                 "poll_interval_seconds": 10,
                 "enabled": "false",
             },
+            headers=_op_headers("operator-token"),
             follow_redirects=False,
         )
         assert response.status_code == 303
@@ -155,6 +158,7 @@ def test_settings_save_tls_flags(tmp_path: Path) -> None:
     db_path = tmp_path / "cluster.db"
     os.environ["DASHBOARD_DB_PATH"] = str(db_path)
     os.environ["DASHBOARD_POLL_BASE_SECONDS"] = "1"
+    _set_operator_creds()
 
     with TestClient(app) as client:
         response = client.post(
@@ -174,6 +178,7 @@ def test_settings_save_tls_flags(tmp_path: Path) -> None:
                 "poll_interval_seconds": 10,
                 "enabled": "true",
             },
+            headers=_op_headers("operator-token"),
             follow_redirects=False,
         )
         assert response.status_code == 303
@@ -469,7 +474,7 @@ def test_revoke_token_blocks_refresh_and_ingest_and_records_audit(tmp_path: Path
 
         revoke_resp = client.post(
             f"/api/v1/nodes/{node_id}/token/revoke",
-            json={"actor": "spoofed-user", "reason": "rotation-test"},
+            json={"reason": "rotation-test"},
             headers=_op_headers("admin-token"),
         )
         assert revoke_resp.status_code == 200
@@ -570,7 +575,6 @@ def test_bulk_update_nodes_applies_action_and_writes_audit(tmp_path: Path) -> No
                 "node_ids": [id1, id2],
                 "action": "set_poll_interval",
                 "poll_interval_seconds": 17,
-                "actor": "spoofed-actor",
                 "reason": "fleet-tune",
             },
             headers=_op_headers("operator-token"),
@@ -698,9 +702,170 @@ def test_read_only_cluster_summary_remains_unauthenticated(tmp_path: Path) -> No
         assert resp.status_code == 200
 
 
+def test_loop_diagnostics_requires_viewer_auth_and_returns_payload(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
+
+    with TestClient(app) as client:
+        unauth = client.get("/api/v1/diagnostics/loops")
+        assert unauth.status_code == 401
+
+        viewer = client.get("/api/v1/diagnostics/loops", headers=_op_headers("viewer-token"))
+        assert viewer.status_code == 200
+        payload = viewer.json()["diagnostics"]
+        assert "poll" in payload
+        assert "webhook" in payload
+        assert "recent_errors" in payload
+
+
+def test_sensitive_detail_routes_require_operator_auth(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
+
+    with TestClient(app) as client:
+        node_id = _seed_node_with_data(db_path)
+
+        unauth_api = client.get(f"/api/v1/nodes/{node_id}")
+        assert unauth_api.status_code == 401
+
+        unauth_metrics = client.get(f"/api/v1/nodes/{node_id}/metrics?minutes=60")
+        assert unauth_metrics.status_code == 401
+
+        unauth_html = client.get(f"/nodes/{node_id}")
+        assert unauth_html.status_code == 401
+
+        viewer_ok = client.get(f"/api/v1/nodes/{node_id}", headers=_op_headers("viewer-token"))
+        assert viewer_ok.status_code == 200
+
+
+def test_node_read_payloads_redact_token_secrets(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
+    ensure_db(db_path)
+    now_iso = utc_now_iso()
+
+    with get_conn(db_path) as conn:
+        node_id = int(
+            conn.execute(
+                """
+                INSERT INTO nodes (
+                    name, hostname, ip_address, token, previous_token, role, poll_interval_seconds, enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "pi-secret",
+                    "pi-secret.local",
+                    "10.0.0.67",
+                    "top-secret-token",
+                    "old-secret-token",
+                    "worker",
+                    10,
+                    1,
+                    now_iso,
+                    now_iso,
+                ),
+            ).lastrowid
+        )
+
+    with TestClient(app) as client:
+        detail = client.get(f"/api/v1/nodes/{node_id}", headers=_op_headers("viewer-token"))
+        assert detail.status_code == 200
+        node_payload = detail.json()["node"]
+        assert "token" not in node_payload
+        assert "previous_token" not in node_payload
+
+        settings_html = client.get("/settings", headers=_op_headers("viewer-token"))
+        assert settings_html.status_code == 200
+        body = settings_html.text
+        assert "top-secret-token" not in body
+        assert "old-secret-token" not in body
+
+        form_html = client.get(f"/settings/node-form?node_id={node_id}", headers=_op_headers("viewer-token"))
+        assert form_html.status_code == 200
+        form_body = form_html.text
+        assert "top-secret-token" not in form_body
+        assert "old-secret-token" not in form_body
+
+
+def test_settings_save_requires_operator_auth(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
+
+    payload = {
+        "name": "pi-save-auth",
+        "hostname": "pi-save-auth.local",
+        "ip_address": "10.0.0.19",
+        "token": "tok",
+        "role": "worker",
+        "agent_port": 8001,
+        "poll_interval_seconds": 10,
+        "enabled": "true",
+    }
+    with TestClient(app) as client:
+        unauth = client.post("/settings/nodes/save", data=payload, follow_redirects=False)
+        assert unauth.status_code == 401
+
+        forbidden = client.post(
+            "/settings/nodes/save",
+            data=payload,
+            headers=_op_headers("viewer-token"),
+            follow_redirects=False,
+        )
+        assert forbidden.status_code == 403
+
+        allowed = client.post(
+            "/settings/nodes/save",
+            data=payload,
+            headers=_op_headers("operator-token"),
+            follow_redirects=False,
+        )
+        assert allowed.status_code == 303
+
+
+def test_settings_toggle_requires_operator_auth(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
+    ensure_db(db_path)
+    now_iso = utc_now_iso()
+    with get_conn(db_path) as conn:
+        node_id = int(
+            conn.execute(
+                """
+                INSERT INTO nodes (name, hostname, ip_address, token, role, poll_interval_seconds, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("pi-toggle-auth", "pi-toggle-auth.local", "10.0.0.66", "tok", "worker", 10, 1, now_iso, now_iso),
+            ).lastrowid
+        )
+
+    with TestClient(app) as client:
+        unauth = client.post(f"/settings/nodes/{node_id}/toggle", follow_redirects=False)
+        assert unauth.status_code == 401
+
+        forbidden = client.post(
+            f"/settings/nodes/{node_id}/toggle",
+            headers=_op_headers("viewer-token"),
+            follow_redirects=False,
+        )
+        assert forbidden.status_code == 403
+
+        allowed = client.post(
+            f"/settings/nodes/{node_id}/toggle",
+            headers=_op_headers("operator-token"),
+            follow_redirects=False,
+        )
+        assert allowed.status_code == 303
+
+
 def test_webhook_deliveries_api_returns_filtered_rows(tmp_path: Path) -> None:
     db_path = tmp_path / "cluster.db"
     os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
     ensure_db(db_path)
     now_iso = utc_now_iso()
 
@@ -734,7 +899,7 @@ def test_webhook_deliveries_api_returns_filtered_rows(tmp_path: Path) -> None:
         )
 
     with TestClient(app) as client:
-        resp = client.get("/api/v1/webhooks/deliveries?status_filter=failed&limit=10")
+        resp = client.get("/api/v1/webhooks/deliveries?status_filter=failed&limit=10", headers=_op_headers("viewer-token"))
         assert resp.status_code == 200
         deliveries = resp.json()["deliveries"]
         assert len(deliveries) == 1
@@ -789,3 +954,18 @@ def test_ingest_rejects_agent_identity_mismatch(tmp_path: Path) -> None:
         ingest_resp = client.post("/api/v1/ingest", content=payload_json, headers=headers)
         assert ingest_resp.status_code == 409
         assert ingest_resp.json()["detail"] == "Identity binding mismatch"
+
+
+def test_openapi_mutation_models_do_not_expose_actor_field(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
+
+    with TestClient(app) as client:
+        spec = client.get("/openapi.json")
+        assert spec.status_code == 200
+        schemas = spec.json()["components"]["schemas"]
+        revoke_props = schemas["RevokeTokenRequest"]["properties"]
+        bulk_props = schemas["BulkNodeUpdateRequest"]["properties"]
+        assert "actor" not in revoke_props
+        assert "actor" not in bulk_props

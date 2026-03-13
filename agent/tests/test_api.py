@@ -86,3 +86,19 @@ def test_services_endpoint_returns_service_status(monkeypatch) -> None:
     assert payload["hostname"] == "pi-test"
     assert len(payload["services"]) == 2
     assert payload["services"][0]["name"] == "ssh"
+
+
+def test_diagnostics_endpoint_returns_loop_telemetry() -> None:
+    with TestClient(app) as client:
+        app.state.settings.token = "secret"
+        app.state.auth_token = "secret"
+        app.state.loop_telemetry = {
+            "enrollment": {"attempts": 3, "successes": 2, "failures": 1, "last_error": "temp"},
+            "push": {"attempts": 5, "successes": 4, "failures": 1, "last_error": ""},
+        }
+        response = client.get("/api/v1/diagnostics/loops", headers=_auth_header("secret"))
+
+    assert response.status_code == 200
+    payload = response.json()["diagnostics"]
+    assert payload["enrollment"]["attempts"] == 3
+    assert payload["push"]["successes"] == 4

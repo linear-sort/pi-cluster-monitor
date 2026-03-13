@@ -354,3 +354,68 @@ async def test_poll_node_fingerprint_mismatch_sets_tls_verify_error(monkeypatch,
         assert row is not None
         assert row["last_error_category"] == "tls_verify_error"
         assert "fingerprint_mismatch" in row["last_error_message"]
+
+
+@pytest.mark.asyncio
+async def test_poller_diagnostics_capture_failures_and_successes(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    ensure_db(db_path)
+    node_id = _seed_node(db_path)
+    poller = PollingService(db_path=db_path)
+
+    class FakeResp:
+        def __init__(self, status_code: int, payload: dict | None = None) -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._payload
+
+    async def fake_get(self, url: str, headers: dict[str, str] | None = None, **kwargs):  # noqa: ARG001
+        if url.endswith("/health"):
+            return FakeResp(200, {"status": "ok"})
+        if url.endswith("/api/v1/metrics"):
+            return FakeResp(
+                200,
+                {
+                    "hostname": "pi-1",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "cpu_percent": 1.0,
+                    "memory_percent": 2.0,
+                    "disk_percent": 3.0,
+                    "temperature_c": 30.0,
+                    "uptime_seconds": 10,
+                    "load_1": 0.1,
+                    "load_5": 0.2,
+                    "load_15": 0.3,
+                    "rx_bytes": 1,
+                    "tx_bytes": 2,
+                },
+            )
+        req = httpx.Request("GET", url)
+        raise httpx.ConnectError("service_unreachable", request=req)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    node = {
+        "id": node_id,
+        "ip_address": "10.0.0.10",
+        "token": "token",
+        "agent_port": 8001,
+        "use_tls": 0,
+        "tls_verify": 1,
+        "tls_ca_path": "",
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(1)) as client:
+        await poller._poll_node(client, node)
+        await poller._record_failure(node_id=node_id, category="offline", message="forced", reachable=False)
+
+    diagnostics = poller.get_diagnostics()
+    assert diagnostics["poll"]["attempts"] >= 1
+    assert diagnostics["poll"]["successes"] >= 1
+    assert diagnostics["poll"]["failures"] >= 1
+    assert diagnostics["services"]["fetch_failures"] >= 1
+    assert diagnostics["recent_errors"]

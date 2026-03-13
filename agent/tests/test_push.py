@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.config import AgentSettings
 from app.models import MetricsResponse
-from app.push import build_ingest_signature, push_once
+from app.push import build_ingest_signature, push_loop, push_once
 
 pytestmark = pytest.mark.unit
 
@@ -77,3 +79,54 @@ async def test_push_once_posts_signed_payload(monkeypatch) -> None:
     payload = json.loads(captured["content"])
     assert payload["hostname"] == "pi-agent"
     assert payload["agent_id"] == "agent-xyz"
+
+
+@pytest.mark.asyncio
+async def test_push_loop_records_failures_and_recovers(monkeypatch) -> None:
+    settings = AgentSettings(
+        token="fallback",
+        name="pi-agent",
+        services=[],
+        dashboard_url="http://dashboard.local:8000",
+        enroll_secret="",
+        enroll_enabled=False,
+        enroll_retry_seconds=10,
+        token_refresh_enabled=False,
+        token_refresh_seconds=3600,
+        push_enabled=True,
+        push_interval_seconds=3,
+        token_file=Path("agent_token.txt"),
+    )
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            settings=settings,
+            auth_token="tok-1",
+            agent_id="agent-xyz",
+            token_version=2,
+            loop_telemetry={},
+        )
+    )
+    state = {"calls": 0}
+    success_event = asyncio.Event()
+
+    async def fake_push_once(**kwargs):  # noqa: ANN003
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("push-temp-failure")
+        success_event.set()
+        return {"status": "accepted"}
+
+    original_sleep = asyncio.sleep
+    monkeypatch.setattr("app.push.push_once", fake_push_once)
+    monkeypatch.setattr("app.push.asyncio.sleep", lambda _: original_sleep(0))
+
+    task = asyncio.create_task(push_loop(app))
+    await asyncio.wait_for(success_event.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    telemetry = app.state.loop_telemetry["push"]
+    assert telemetry["attempts"] >= 2
+    assert telemetry["failures"] >= 1
+    assert telemetry["successes"] >= 1

@@ -95,7 +95,6 @@ class IngestMetricsRequest(BaseModel):
 
 class RevokeTokenRequest(BaseModel):
     reason: str = Field(default="manual_revoke", min_length=1, max_length=200)
-    actor: str | None = Field(default=None, max_length=120)
 
 
 class RevokeTokenResponse(BaseModel):
@@ -109,7 +108,6 @@ class BulkNodeUpdateRequest(BaseModel):
     node_ids: list[int] = Field(min_length=1)
     action: str = Field(min_length=1, max_length=40)
     reason: str = Field(default="bulk_update", min_length=1, max_length=200)
-    actor: str | None = Field(default=None, max_length=120)
     enabled: bool | None = None
     poll_interval_seconds: int | None = None
     role: str | None = Field(default=None, max_length=50)

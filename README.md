@@ -260,6 +260,7 @@ docker compose -f docker-compose.agent.dev.yml up -d --build
 - `GET /health`
 - `GET /api/v1/metrics`
 - `GET /api/v1/services`
+- `GET /api/v1/diagnostics/loops` (loop attempts/success/failure counters)
 
 Authenticated via `Authorization: Bearer <token>`.
 
@@ -280,19 +281,24 @@ Authenticated via `Authorization: Bearer <token>`.
 - `POST /api/v1/nodes/{id}/token/revoke` (revoke node credentials + audit event)
 - `POST /api/v1/nodes/bulk-update` (fleet updates: enabled flag, poll interval, role)
 - `GET /api/v1/webhooks/deliveries` (delivery visibility for pending/failed/dead/successful webhook sends)
+- `GET /api/v1/diagnostics/loops` (poll/cleanup/services/webhook loop diagnostics)
 
 Control-plane authorization policy:
 
 - **Protected (requires `X-PCM-Operator-Token`):**
+  - `POST /settings/nodes/save` (`operator` or `admin` role)
+  - `POST /settings/nodes/{id}/toggle` (`operator` or `admin` role)
+  - `GET /nodes/{id}` (`viewer` or higher role)
   - `POST /api/v1/nodes/{id}/token/revoke` (`admin` role)
   - `POST /api/v1/nodes/bulk-update` (`operator` or `admin` role)
+  - `GET /api/v1/nodes/{id}` (`viewer` or higher role)
+  - `GET /api/v1/nodes/{id}/metrics` (`viewer` or higher role)
+  - `GET /api/v1/webhooks/deliveries` (`viewer` or higher role)
+  - `GET /api/v1/diagnostics/loops` (`viewer` or higher role)
 - **Read-only/public (no operator token required):**
   - `GET /api/v1/cluster/summary`
   - `GET /api/v1/nodes`
-  - `GET /api/v1/nodes/{id}`
-  - `GET /api/v1/nodes/{id}/metrics`
   - `GET /api/v1/alerts`
-  - `GET /api/v1/webhooks/deliveries`
 
 Push ingest signature headers:
 
@@ -305,6 +311,7 @@ Identity migration note:
 
 - Agents now send `agent_id` on enroll/refresh/ingest.
 - Dashboard prefers `agent_id` binding when present and falls back to hostname for legacy agents during migration.
+- Node read payloads and templates are redacted by contract and do not expose bearer token material (`token`, `previous_token`).
 
 ## Database
 

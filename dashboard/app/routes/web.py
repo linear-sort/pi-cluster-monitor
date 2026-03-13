@@ -211,6 +211,24 @@ def _find_node_by_identity(conn, hostname: str, agent_id: str | None) -> dict | 
     )
 
 
+def _fetch_node_read(conn, node_id: int) -> dict | None:
+    return fetch_one_dict(
+        conn,
+        """
+        SELECT
+            id, name, hostname, agent_id, ip_address, role, agent_port, use_tls, tls_verify,
+            tls_ca_path, tls_fingerprint_sha256, collect_mode, poll_interval_seconds, enabled,
+            enrollment_status, enrolled_at, token_expires_at, token_version, revoked_at, revoked_reason, revoked_by,
+            last_status, last_seen_at, last_heartbeat_at, last_error_category, last_error_message, consecutive_failures,
+            created_at, updated_at
+        FROM nodes
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (node_id,),
+    )
+
+
 @router.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
     return RedirectResponse(url="/cluster", status_code=303)
@@ -251,8 +269,9 @@ def partial_cluster_nodes(request: Request) -> HTMLResponse:
 
 @router.get("/nodes/{node_id}", response_class=HTMLResponse)
 def node_detail(request: Request, node_id: int) -> HTMLResponse:
+    require_operator(request, min_role="viewer")
     with get_conn(_db_path(request)) as conn:
-        node = fetch_one_dict(conn, "SELECT * FROM nodes WHERE id = ?", (node_id,))
+        node = _fetch_node_read(conn, node_id)
         if not node:
             return templates.TemplateResponse(request, "not_found.html", {"message": "Node not found"}, status_code=404)
 
@@ -316,8 +335,20 @@ def node_metrics_json(request: Request, node_id: int, minutes: int = 60):
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request) -> HTMLResponse:
+    require_operator(request, min_role="viewer")
     with get_conn(_db_path(request)) as conn:
-        nodes = fetch_all_dict(conn, "SELECT * FROM nodes ORDER BY name")
+        nodes = fetch_all_dict(
+            conn,
+            """
+            SELECT
+                id, name, hostname, agent_id, ip_address, role, agent_port, use_tls, tls_verify,
+                tls_ca_path, tls_fingerprint_sha256, collect_mode, poll_interval_seconds, enabled,
+                enrollment_status, enrolled_at, token_expires_at, token_version, revoked_at, revoked_reason, revoked_by,
+                last_status, last_seen_at, last_heartbeat_at, last_error_category, last_error_message, consecutive_failures
+            FROM nodes
+            ORDER BY name
+            """,
+        )
 
     return templates.TemplateResponse(
         request,
@@ -329,7 +360,7 @@ def settings_page(request: Request) -> HTMLResponse:
 @router.get("/settings/node-form", response_class=HTMLResponse)
 def node_form_partial(request: Request, node_id: int | None = None) -> HTMLResponse:
     with get_conn(_db_path(request)) as conn:
-        node = fetch_one_dict(conn, "SELECT * FROM nodes WHERE id = ?", (node_id,)) if node_id else None
+        node = _fetch_node_read(conn, node_id) if node_id else None
 
     return templates.TemplateResponse(
         request,
@@ -345,7 +376,7 @@ def save_node(
     name: str = Form(...),
     hostname: str = Form(...),
     ip_address: str = Form(...),
-    token: str = Form(...),
+    token: str = Form(default=""),
     role: str = Form(default="worker"),
     agent_port: int = Form(default=8001),
     use_tls: str = Form(default="false"),
@@ -356,6 +387,8 @@ def save_node(
     poll_interval_seconds: int = Form(default=10),
     enabled: str = Form(default="true"),
 ) -> RedirectResponse:
+    require_operator(request, min_role="operator")
+    token_value = token.strip()
     use_tls_bool = str(use_tls).strip().lower() in {"1", "true", "yes", "on"}
     tls_verify_bool = str(tls_verify).strip().lower() in {"1", "true", "yes", "on"}
     collect_mode_value = str(collect_mode).strip().lower()
@@ -365,6 +398,12 @@ def save_node(
     now_iso = utc_now_iso()
     with get_conn(_db_path(request)) as conn:
         if id:
+            current = fetch_one_dict(conn, "SELECT token FROM nodes WHERE id = ? LIMIT 1", (id,))
+            if not current:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
+            token_to_store = token_value or str(current.get("token") or "").strip()
+            if not token_to_store:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token is required")
             conn.execute(
                 """
                 UPDATE nodes
@@ -377,7 +416,7 @@ def save_node(
                     name.strip(),
                     hostname.strip(),
                     ip_address.strip(),
-                    token.strip(),
+                    token_to_store,
                     role.strip() or "worker",
                     int(agent_port),
                     1 if use_tls_bool else 0,
@@ -392,6 +431,8 @@ def save_node(
                 ),
             )
         else:
+            if not token_value:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token is required")
             conn.execute(
                 """
                 INSERT INTO nodes (
@@ -406,7 +447,7 @@ def save_node(
                     name.strip(),
                     hostname.strip(),
                     ip_address.strip(),
-                    token.strip(),
+                    token_value,
                     role.strip() or "worker",
                     int(agent_port),
                     1 if use_tls_bool else 0,
@@ -426,6 +467,7 @@ def save_node(
 
 @router.post("/settings/nodes/{node_id}/toggle")
 def toggle_node(request: Request, node_id: int) -> RedirectResponse:
+    require_operator(request, min_role="operator")
     with get_conn(_db_path(request)) as conn:
         row = fetch_one_dict(conn, "SELECT enabled FROM nodes WHERE id = ?", (node_id,))
         if row is not None:
@@ -451,8 +493,9 @@ def api_nodes(request: Request) -> dict:
 
 @router.get("/api/v1/nodes/{node_id}")
 def api_node_detail(request: Request, node_id: int) -> dict:
+    require_operator(request, min_role="viewer")
     with get_conn(_db_path(request)) as conn:
-        node = fetch_one_dict(conn, "SELECT * FROM nodes WHERE id = ?", (node_id,))
+        node = _fetch_node_read(conn, node_id)
         if not node:
             return {"error": "node_not_found"}
         latest = fetch_one_dict(
@@ -483,6 +526,7 @@ def api_node_detail(request: Request, node_id: int) -> dict:
 
 @router.get("/api/v1/nodes/{node_id}/metrics")
 def api_node_metrics(request: Request, node_id: int, minutes: int = 60) -> dict:
+    require_operator(request, min_role="viewer")
     return node_metrics_json(request=request, node_id=node_id, minutes=minutes)
 
 
@@ -507,8 +551,18 @@ def api_alerts(request: Request, unresolved_only: bool = False, limit: int = 100
     return {"alerts": rows}
 
 
+@router.get("/api/v1/diagnostics/loops")
+def api_loop_diagnostics(request: Request) -> dict:
+    require_operator(request, min_role="viewer")
+    poller = getattr(request.app.state, "poller", None)
+    if poller is None:
+        return {"error": "poller_unavailable"}
+    return {"diagnostics": poller.get_diagnostics()}
+
+
 @router.get("/api/v1/webhooks/deliveries")
 def api_webhook_deliveries(request: Request, status_filter: str = "failed", limit: int = 100) -> dict:
+    require_operator(request, min_role="viewer")
     allowed = {"pending", "failed", "dead", "delivered", "all"}
     resolved_filter = status_filter.strip().lower()
     if resolved_filter not in allowed:

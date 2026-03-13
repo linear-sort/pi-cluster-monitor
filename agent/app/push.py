@@ -5,14 +5,29 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import socket
 import time
+from typing import Any
 
 import httpx
 
 from app.collectors.system_metrics import collect_metrics
 from app.config import AgentSettings
+
+logger = logging.getLogger(__name__)
+
+
+def _loop_telemetry_bucket(app) -> dict[str, Any]:
+    telemetry_root = getattr(app.state, "loop_telemetry", None)
+    if not isinstance(telemetry_root, dict):
+        telemetry_root = {}
+        setattr(app.state, "loop_telemetry", telemetry_root)
+    return telemetry_root.setdefault(
+        "push",
+        {"attempts": 0, "successes": 0, "failures": 0, "last_error": ""},
+    )
 
 
 def build_ingest_signature(token: str, timestamp: str, nonce: str, payload_json: str) -> str:
@@ -51,13 +66,20 @@ async def push_loop(app) -> None:
     settings: AgentSettings = app.state.settings
     while True:
         try:
+            telemetry = _loop_telemetry_bucket(app)
+            telemetry["attempts"] = int(telemetry.get("attempts", 0)) + 1
             token = str(getattr(app.state, "auth_token", "") or "").strip()
             agent_id = str(getattr(app.state, "agent_id", "") or "").strip()
             token_version = int(getattr(app.state, "token_version", 1) or 1)
             if settings.push_enabled and settings.dashboard_url and token and agent_id:
                 await push_once(settings=settings, token=token, agent_id=agent_id, token_version=token_version)
+                telemetry["successes"] = int(telemetry.get("successes", 0)) + 1
+                telemetry["last_error"] = ""
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as exc:
+            telemetry = _loop_telemetry_bucket(app)
+            telemetry["failures"] = int(telemetry.get("failures", 0)) + 1
+            telemetry["last_error"] = str(exc)[:300]
+            logger.exception("agent push loop iteration failed")
         await asyncio.sleep(max(3, settings.push_interval_seconds))

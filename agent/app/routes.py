@@ -33,3 +33,9 @@ def services(request: Request) -> ServicesResponse:
         timestamp=datetime.now(timezone.utc),
         services=collect_services(settings.services),
     )
+
+
+@router.get("/api/v1/diagnostics/loops", dependencies=[Depends(auth_dependency)])
+def loop_diagnostics(request: Request) -> dict:
+    telemetry = getattr(request.app.state, "loop_telemetry", {})
+    return {"diagnostics": telemetry}

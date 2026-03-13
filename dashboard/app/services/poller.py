@@ -1,9 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 from pathlib import Path
 import socket
 import ssl
@@ -15,6 +16,8 @@ from pydantic import ValidationError
 from app.db import fetch_all_dict, get_conn, utc_now_iso
 from app.models import AgentMetrics
 from app.services.alerts import evaluate_metric_thresholds, evaluate_offline_alert
+
+logger = logging.getLogger(__name__)
 
 
 class PollingService:
@@ -55,6 +58,44 @@ class PollingService:
         self._last_cleanup_epoch: float = 0.0
         self._last_webhook_dispatch_epoch: float = 0.0
         self._node_runtime: dict[int, dict[str, float | int]] = {}
+        self._telemetry: dict[str, Any] = {
+            "poll": {"attempts": 0, "successes": 0, "failures": 0},
+            "cleanup": {"runs": 0},
+            "services": {"fetch_failures": 0},
+            "webhook": {"attempts": 0, "successes": 0, "failures": 0, "dead_letters": 0},
+            "recent_errors": [],
+            "updated_at": utc_now_iso(),
+        }
+
+    def _bump(self, bucket: str, key: str, amount: int = 1) -> None:
+        section = self._telemetry.setdefault(bucket, {})
+        section[key] = int(section.get(key, 0)) + amount
+        self._telemetry["updated_at"] = utc_now_iso()
+
+    def _record_error(self, component: str, category: str, message: str) -> None:
+        errors = self._telemetry.setdefault("recent_errors", [])
+        errors.append(
+            {
+                "timestamp": utc_now_iso(),
+                "component": component,
+                "category": category,
+                "message": message[:300],
+            }
+        )
+        if len(errors) > 50:
+            del errors[:-50]
+        self._telemetry["updated_at"] = utc_now_iso()
+
+    def get_diagnostics(self) -> dict[str, Any]:
+        return {
+            "poll": dict(self._telemetry.get("poll", {})),
+            "cleanup": dict(self._telemetry.get("cleanup", {})),
+            "services": dict(self._telemetry.get("services", {})),
+            "webhook": dict(self._telemetry.get("webhook", {})),
+            "recent_errors": list(self._telemetry.get("recent_errors", [])),
+            "node_runtime_count": len(self._node_runtime),
+            "updated_at": str(self._telemetry.get("updated_at") or utc_now_iso()),
+        }
 
     def start(self) -> None:
         if self._task is None:
@@ -118,6 +159,7 @@ class PollingService:
 
     async def _poll_node(self, client: httpx.AsyncClient, node: dict[str, Any]) -> None:
         node_id = int(node["id"])
+        self._bump("poll", "attempts")
         ip = node["ip_address"]
         token = node["token"]
         port = int(node.get("agent_port") or 8001)
@@ -179,20 +221,26 @@ class PollingService:
             services_payload = await self._fetch_services(request_client, base_url, headers)
             await self._record_success(node_id, metrics, metrics_payload, services_payload)
         except ValidationError as exc:
+            logger.warning("poll metrics parse error node_id=%s error=%s", node_id, exc)
             await self._record_failure(node_id, "metrics_parse_error", str(exc), reachable=True)
         except httpx.TimeoutException as exc:
+            logger.warning("poll timeout node_id=%s error=%s", node_id, exc)
             await self._record_failure(node_id, "timeout", str(exc), reachable=False)
         except httpx.ConnectError as exc:
+            logger.warning("poll connect error node_id=%s error=%s", node_id, exc)
             await self._record_failure(node_id, "offline", str(exc), reachable=False)
         except httpx.TransportError as exc:
             msg = str(exc)
             category = "tls_verify_error" if "CERTIFICATE_VERIFY_FAILED" in msg else "transport_error"
+            logger.warning("poll transport error node_id=%s category=%s error=%s", node_id, category, msg)
             await self._record_failure(node_id, category, msg, reachable=False)
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             category = "auth_failure" if status_code in (401, 403) else "agent_http_error"
+            logger.warning("poll http status error node_id=%s category=%s status=%s", node_id, category, status_code)
             await self._record_failure(node_id, category, f"http_status={status_code}", reachable=True)
         except Exception as exc:
+            logger.exception("poll unexpected error node_id=%s", node_id)
             await self._record_failure(node_id, "unknown_error", str(exc), reachable=False)
         finally:
             if dedicated_client is not None:
@@ -235,6 +283,8 @@ class PollingService:
             if isinstance(services, list):
                 return [item for item in services if isinstance(item, dict)]
         except Exception:
+            self._bump("services", "fetch_failures")
+            logger.exception("poll services fetch failed base_url=%s", base_url)
             return []
         return []
 
@@ -307,6 +357,7 @@ class PollingService:
             )
             evaluate_offline_alert(conn, node_id, 0)
         self._node_runtime[node_id] = {"failures": 0, "circuit_until": 0.0}
+        self._bump("poll", "successes")
 
     async def _record_failure(self, node_id: int, category: str, message: str, reachable: bool) -> None:
         runtime = self._node_runtime.setdefault(node_id, {"failures": 0, "circuit_until": 0.0})
@@ -354,6 +405,8 @@ class PollingService:
                 ),
             )
             evaluate_offline_alert(conn, node_id, 0 if reachable else offline_seconds)
+        self._bump("poll", "failures")
+        self._record_error(component="poll", category=category, message=f"node_id={node_id} {message}")
 
     async def _run_retention_cleanup_if_due(self) -> None:
         now_epoch = datetime.now(timezone.utc).timestamp()
@@ -369,6 +422,7 @@ class PollingService:
             conn.execute("DELETE FROM metric_samples WHERE collected_at < ?", (metric_cutoff,))
             conn.execute("DELETE FROM alert_events WHERE created_at < ? AND resolved_at IS NOT NULL", (alert_cutoff,))
             conn.execute("DELETE FROM services WHERE checked_at < ?", (service_cutoff,))
+        self._bump("cleanup", "runs")
 
     async def _dispatch_webhooks_if_due(self) -> None:
         if not self.webhook_url:
@@ -403,6 +457,7 @@ class PollingService:
             await self._attempt_webhook_delivery(row)
 
     async def _attempt_webhook_delivery(self, row: dict[str, Any]) -> None:
+        self._bump("webhook", "attempts")
         payload = {
             "alert_event_id": int(row["alert_event_id"]),
             "node_id": int(row["node_id"]),
@@ -432,6 +487,7 @@ class PollingService:
                     (now_iso, now_iso, delivery_id),
                 )
         except Exception as exc:
+            logger.warning("webhook delivery failed delivery_id=%s attempt=%s error=%s", delivery_id, attempts + 1, exc)
             next_attempts = attempts + 1
             backoff_seconds = min(self.webhook_retry_base_seconds * (2 ** max(0, attempts)), 300)
             next_attempt_at = (datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)).isoformat()
@@ -445,3 +501,4 @@ class PollingService:
                     """,
                     (next_status, next_attempts, next_attempt_at, utc_now_iso(), str(exc)[:300], delivery_id),
                 )
+
