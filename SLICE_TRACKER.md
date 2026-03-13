@@ -94,6 +94,7 @@ Each "Latest Update" entry must include:
 | 3 | Transport Trust (TLS) | done | HTTPS polling and trust verification options |
 | 4 | Hybrid Push/Pull Metrics | done | Agent push ingest path with replay protection and dedupe |
 | 5 | Ops Hardening + Fleet Controls | released | Token rotation/revocation, bulk ops, alert/webhook hardening |
+| 6 | Control Plane Security + Identity Integrity | planned | Operator authZ, authenticated audit actor, stable node identity binding, runtime error observability |
 
 ---
 
@@ -445,7 +446,7 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ## Slice 5 - Ops Hardening + Fleet Controls
 
-**Status:** `done`  
+**Status:** `released`  
 **Goal:** Make day-2 operations safe and scalable for larger Pi fleets.
 
 ### Deliverables
@@ -531,6 +532,212 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ---
 
+## Slice 6 - Control Plane Security + Identity Integrity
+
+**Status:** `in_progress`  
+**Goal:** Close control-plane security gaps by enforcing operator authorization, hardening node identity semantics, and improving failure observability for background runtime loops.
+
+### Deliverables
+
+- Dashboard control-plane auth for mutating/sensitive endpoints:
+  - add explicit operator authentication mechanism (session or API token)
+  - add role/permission checks for fleet-control and security endpoints
+- Protect sensitive routes:
+  - require operator auth for `POST /api/v1/nodes/{id}/token/revoke`
+  - require operator auth for `POST /api/v1/nodes/bulk-update`
+  - define which read-only APIs remain unauthenticated (if any) and document rationale
+- Authenticated audit actor:
+  - remove trust in caller-supplied `actor` for security audit events
+  - derive actor identity from authenticated operator context
+- Node identity hardening:
+  - move refresh/ingest/enrollment matching away from hostname-only lookup
+  - introduce stable identity binding (`node_id`/`agent_id`) in token lifecycle paths
+  - add uniqueness and conflict-handling strategy for identity keys (hostname and/or agent identifier)
+- Runtime observability hardening:
+  - replace silent background-loop exception swallowing with structured logs/metrics
+  - add explicit failure counters/events for enroll, refresh, push, and webhook dispatch loops
+
+### Design Guardrails
+
+- Keep backward compatibility first:
+  - maintain a staged migration plan so existing enrolled agents continue to function during rollout
+  - prefer dual-path acceptance windows (old + new identity claims) with clear deprecation timeline
+- Treat auth boundaries as deny-by-default:
+  - all mutating routes must fail closed when auth context is missing/invalid
+  - no security-sensitive behavior may rely on request body claims for operator identity
+- Preserve security event integrity:
+  - audit records must be tamper-evident in source attribution (principal, time, action, target, reason)
+  - include request correlation identifiers to link API request logs with audit rows
+- Keep implementation test-first:
+  - add failing authorization and identity-collision tests before route/controller refactors
+  - require regression tests proving current agent enrollment/refresh works during migration window
+
+### Tests Required
+
+- Authorization boundary tests:
+  - unauthenticated and insufficient-role requests are rejected for revoke/bulk endpoints
+  - authorized operator requests succeed and produce correct audit records
+- Audit integrity tests:
+  - `security_audit_events.actor` is sourced from auth principal, not payload fields
+  - spoofed actor payload values do not alter stored actor attribution
+- Identity-binding tests:
+  - refresh and ingest reject hostname collision/rebinding attempts
+  - identity migration path supports legacy agents and new identity claim flow
+- Runtime observability tests:
+  - enroll/refresh/push/webhook failures emit structured logs and update failure counters
+  - transient network errors do not hide repeated auth/config faults
+
+### Deployment Gate
+
+- New control-plane auth/authorization tests pass in CI.
+- Security regression suite validates no unauthorized fleet mutations are possible.
+- Identity migration smoke run completed with mixed legacy/new agents.
+- Operator auth and key-rotation runbook documented and validated.
+- Images published to GHCR for target release tags.
+- Compose env image tags updated to promoted release tags.
+- Post-deploy smoke validation completed and recorded.
+
+### Checklist
+
+- [x] Operator authentication mechanism implemented
+- [x] Authorization checks enforced on mutating/security routes
+- [x] Audit actor attribution bound to authenticated principal
+- [ ] Stable node identity binding implemented for refresh/ingest/enrollment
+- [ ] Backward-compatible identity migration path implemented
+- [ ] Structured background-loop error telemetry implemented
+- [x] Tests added and green
+- [ ] Images published (GHCR)
+- [ ] Compose env tags updated
+- [ ] Post-deploy smoke validation completed
+
+### Execution Breakdown (6.1 / 6.2 / 6.3)
+
+#### Slice 6.1 - Control Plane Auth Boundary
+
+**Status:** `done`  
+**Objective:** Enforce authenticated, role-aware access on fleet/security mutation paths first.
+
+**Scope:**
+- Introduce operator auth mechanism for dashboard API/UI mutating routes.
+- Require auth + authorization for:
+  - `POST /api/v1/nodes/{id}/token/revoke`
+  - `POST /api/v1/nodes/bulk-update`
+- Replace payload-driven `actor` usage with principal-derived identity in audit writes.
+- Document public vs protected endpoint policy in README/ops docs.
+
+**Acceptance Criteria:**
+- Unauthenticated requests to protected routes return `401` (or redirect for UI as designed).
+- Authenticated but insufficient-role requests return `403`.
+- Authorized requests succeed and store authenticated principal in `security_audit_events.actor`.
+- Existing non-mutating monitoring endpoints continue to function per documented policy.
+
+**Tests Required:**
+- auth required tests for revoke + bulk routes
+- role boundary tests (`viewer`/`operator`/`admin` semantics as chosen)
+- spoofed actor payload ignored tests
+- regression tests for existing read-only endpoints
+
+**Out of Scope:**
+- Node identity migration mechanics (handled in 6.2).
+- Background loop telemetry refactor (handled in 6.3).
+
+#### Slice 6.2 - Node Identity Binding Migration
+
+**Objective:** Remove hostname-only trust assumptions for refresh/ingest/enrollment paths.
+
+**Scope:**
+- Define canonical runtime identity key (for example `node_id` claim or durable `agent_id`).
+- Add schema + API contract updates needed for identity binding.
+- Implement backward-compatible migration path:
+  - legacy hostname-based flow accepted during transition
+  - new identity claim preferred and validated
+- Add conflict detection/handling for identity collisions and rebinding attempts.
+
+**Acceptance Criteria:**
+- Refresh and ingest can authenticate/authorize using stable identity binding.
+- Hostname collisions cannot silently hijack or rebind credentials.
+- Migration mode supports mixed legacy/new agents with explicit cutoff plan documented.
+- Enrollment updates preserve canonical identity semantics from Cross-Cutting Contracts.
+
+**Tests Required:**
+- identity collision and rebinding rejection tests
+- dual-path migration compatibility tests (legacy + new agent behavior)
+- token refresh and ingest parity tests under new identity contract
+- DB migration tests for existing node rows
+
+**Out of Scope:**
+- Operator auth boundary (6.1).
+- Runtime telemetry architecture improvements (6.3).
+
+#### Slice 6.3 - Runtime Error Telemetry + Operational Diagnostics
+
+**Objective:** Make background failures observable and actionable without noisy false positives.
+
+**Scope:**
+- Replace silent `except Exception: pass` patterns in agent/dashboard loops with structured logging.
+- Add loop-level health counters/events for:
+  - enroll attempts/failures
+  - token refresh attempts/failures
+  - push ingest attempts/failures
+  - webhook dispatch attempts/failures/dead-letter transitions
+- Surface minimal diagnostic views or API metrics for operator troubleshooting.
+- Define alerting guidance for repeated auth/configuration failures.
+
+**Acceptance Criteria:**
+- Repeated background failures are visible in logs and/or API diagnostics.
+- Operators can distinguish transient network failure from persistent auth/config failures.
+- Telemetry additions do not break current polling/push runtime behavior.
+- Failure instrumentation has bounded cardinality and retention controls.
+
+**Tests Required:**
+- loop error-path tests validating structured log/event emission
+- retry/backoff telemetry progression tests
+- webhook dead-letter visibility tests (including recovery path if applicable)
+- regression tests ensuring loops keep running after handled exceptions
+
+**Out of Scope:**
+- New auth model semantics (6.1 completed already).
+- Identity schema migration logic (6.2 completed already).
+
+### Recommended Sequence and Gates
+
+- Sequence: `6.1 -> 6.2 -> 6.3` (security boundary first, identity second, observability third).
+- Merge gate between sub-slices:
+  - 6.1 must land before any additional fleet mutation features.
+  - 6.2 must land before removing legacy hostname fallback.
+  - 6.3 must land before declaring Slice 6 `done`.
+- Release gate:
+  - promote to `released` only after mixed-fleet migration smoke + operator auth smoke are both recorded.
+
+### Latest Update
+
+- 2026-03-12
+  - PR: N/A (planning update)
+  - Added Slice 6 based on post-Slice-5 gap analysis of current implementation.
+  - Key deferred risks explicitly accepted into Slice 6:
+    - control-plane fleet mutation endpoints currently lack enforced operator auth boundaries
+    - security audit actor currently trusts caller payload values
+    - refresh/ingest identity matching remains hostname-centric and collision-prone
+    - agent/push background loops currently suppress exceptions without explicit runtime evidence
+  - CI evidence: N/A (planning only)
+  - Deploy/smoke evidence: N/A (planning only)
+- 2026-03-12
+  - Slice 6.1 completed:
+    - Added operator-token auth (`DASHBOARD_OPERATOR_CREDENTIALS`) with role model (`viewer`, `operator`, `admin`).
+    - Enforced authZ boundaries:
+      - revoke endpoint now requires `admin`
+      - bulk-update endpoint now requires `operator` or `admin`
+    - Audit actor attribution now derives from authenticated principal; caller-supplied actor payload is ignored.
+    - Added request correlation ID capture in audit metadata for protected mutations.
+    - Documented protected vs read-only API policy in README.
+  - Test evidence:
+    - auth required / role boundary tests for revoke and bulk endpoints
+    - spoofed actor ignored test coverage
+    - read-only endpoint regression test coverage
+    - local suite status: `dashboard: 31 passed`, `agent: 9 passed`
+
+---
+
 ## Update Protocol (How to Maintain This File)
 
 On each PR:
@@ -556,3 +763,14 @@ On each PR:
   - Slice 2 core resilience logic is implemented; deployment confirmation was later provided and slice was advanced to `done`.
   - Slice 3 remains `in_progress`; basic TLS transport wiring exists, while advanced trust policy support and related tests are pending.
   - Slice 4 and Slice 5 remain `planned`; no push ingest, replay protection, revocation, bulk ops, or audit trail implementation found.
+- 2026-03-12 post-release architecture consistency audit:
+  - Tracker status mismatch corrected: Slice 5 section status aligned to `released`.
+  - Identified control-plane boundary gap:
+    - fleet mutation and token revocation endpoints are callable without operator authentication/authorization.
+  - Identified audit attribution gap:
+    - security audit actor values are currently caller-provided, not principal-derived.
+  - Identified identity-hardening gap:
+    - refresh/ingest flows still anchor primarily on hostname lookup with no enforced uniqueness constraint contract at DB level.
+  - Identified observability gap:
+    - agent enroll/refresh/push loops swallow runtime exceptions, reducing incident diagnosability.
+  - These risks are now tracked as Slice 6 scope.

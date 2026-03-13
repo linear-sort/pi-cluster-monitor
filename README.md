@@ -234,6 +234,7 @@ docker compose -f docker-compose.agent.dev.yml up -d --build
 - `DASHBOARD_WEBHOOK_RETRY_BASE_SECONDS` (default: `15`)
 - `DASHBOARD_WEBHOOK_MAX_ATTEMPTS` (default: `5`)
 - `DASHBOARD_WEBHOOK_DISPATCH_INTERVAL_SECONDS` (default: `5`)
+- `DASHBOARD_OPERATOR_CREDENTIALS` (default: empty; format: `token:principal:role,...` where role is `viewer|operator|admin`)
 
 ### Agent env vars
 
@@ -277,6 +278,19 @@ Authenticated via `Authorization: Bearer <token>`.
 - `POST /api/v1/nodes/{id}/token/revoke` (revoke node credentials + audit event)
 - `POST /api/v1/nodes/bulk-update` (fleet updates: enabled flag, poll interval, role)
 - `GET /api/v1/webhooks/deliveries` (delivery visibility for pending/failed/dead/successful webhook sends)
+
+Control-plane authorization policy:
+
+- **Protected (requires `X-PCM-Operator-Token`):**
+  - `POST /api/v1/nodes/{id}/token/revoke` (`admin` role)
+  - `POST /api/v1/nodes/bulk-update` (`operator` or `admin` role)
+- **Read-only/public (no operator token required):**
+  - `GET /api/v1/cluster/summary`
+  - `GET /api/v1/nodes`
+  - `GET /api/v1/nodes/{id}`
+  - `GET /api/v1/nodes/{id}/metrics`
+  - `GET /api/v1/alerts`
+  - `GET /api/v1/webhooks/deliveries`
 
 Push ingest signature headers:
 

@@ -25,6 +25,7 @@ from app.models import (
     TokenRefreshRequest,
     TokenRefreshResponse,
 )
+from app.security import request_correlation_id, require_operator
 
 
 router = APIRouter()
@@ -798,6 +799,8 @@ def api_token_refresh(request: Request, payload: TokenRefreshRequest) -> TokenRe
 
 @router.post("/api/v1/nodes/{node_id}/token/revoke", response_model=RevokeTokenResponse)
 def api_revoke_node_token(request: Request, node_id: int, payload: RevokeTokenRequest) -> RevokeTokenResponse:
+    principal = require_operator(request, min_role="admin")
+    corr_id = request_correlation_id(request)
     now_iso = utc_now_iso()
     with get_conn(_db_path(request)) as conn:
         existing = fetch_one_dict(conn, "SELECT id, token_version FROM nodes WHERE id = ? LIMIT 1", (node_id,))
@@ -819,7 +822,7 @@ def api_revoke_node_token(request: Request, node_id: int, payload: RevokeTokenRe
                 updated_at = ?
             WHERE id = ?
             """,
-            (now_iso, now_iso, next_version, now_iso, payload.reason.strip(), payload.actor.strip(), now_iso, node_id),
+            (now_iso, now_iso, next_version, now_iso, payload.reason.strip(), principal["principal"], now_iso, node_id),
         )
         conn.execute(
             """
@@ -828,9 +831,9 @@ def api_revoke_node_token(request: Request, node_id: int, payload: RevokeTokenRe
             """,
             (
                 node_id,
-                payload.actor.strip(),
+                principal["principal"],
                 payload.reason.strip(),
-                json.dumps({"token_version": next_version}, separators=(",", ":"), sort_keys=True),
+                json.dumps({"token_version": next_version, "correlation_id": corr_id}, separators=(",", ":"), sort_keys=True),
                 now_iso,
             ),
         )
@@ -844,6 +847,8 @@ def api_revoke_node_token(request: Request, node_id: int, payload: RevokeTokenRe
 
 @router.post("/api/v1/nodes/bulk-update", response_model=BulkNodeUpdateResponse)
 def api_bulk_update_nodes(request: Request, payload: BulkNodeUpdateRequest) -> BulkNodeUpdateResponse:
+    principal = require_operator(request, min_role="operator")
+    corr_id = request_correlation_id(request)
     action = payload.action.strip().lower()
     valid_actions = {"set_enabled", "set_poll_interval", "set_role"}
     if action not in valid_actions:
@@ -902,9 +907,13 @@ def api_bulk_update_nodes(request: Request, payload: BulkNodeUpdateRequest) -> B
                 (
                     node_id,
                     f"bulk_{action}",
-                    payload.actor.strip(),
+                    principal["principal"],
                     payload.reason.strip(),
-                    json.dumps(metadata, separators=(",", ":"), sort_keys=True),
+                    json.dumps(
+                        {**metadata, "correlation_id": corr_id},
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
                     now_iso,
                 ),
             )

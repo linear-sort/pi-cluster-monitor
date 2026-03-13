@@ -16,6 +16,20 @@ from app.main import app
 pytestmark = pytest.mark.integration
 
 
+def _set_operator_creds() -> None:
+    os.environ["DASHBOARD_OPERATOR_CREDENTIALS"] = ",".join(
+        [
+            "admin-token:alice-admin:admin",
+            "operator-token:bob-operator:operator",
+            "viewer-token:victor-viewer:viewer",
+        ]
+    )
+
+
+def _op_headers(token: str) -> dict[str, str]:
+    return {"X-PCM-Operator-Token": token, "X-Request-ID": "req-test-123"}
+
+
 def _seed_node_with_data(db_path: Path) -> int:
     now_iso = utc_now_iso()
     with get_conn(db_path) as conn:
@@ -371,6 +385,7 @@ def test_revoke_token_blocks_refresh_and_ingest_and_records_audit(tmp_path: Path
     db_path = tmp_path / "cluster.db"
     os.environ["DASHBOARD_DB_PATH"] = str(db_path)
     os.environ["DASHBOARD_ENROLL_SECRET"] = "enroll-secret"
+    _set_operator_creds()
 
     with TestClient(app) as client:
         enroll_resp = client.post(
@@ -389,7 +404,8 @@ def test_revoke_token_blocks_refresh_and_ingest_and_records_audit(tmp_path: Path
 
         revoke_resp = client.post(
             f"/api/v1/nodes/{node_id}/token/revoke",
-            json={"actor": "test-suite", "reason": "rotation-test"},
+            json={"actor": "spoofed-user", "reason": "rotation-test"},
+            headers=_op_headers("admin-token"),
         )
         assert revoke_resp.status_code == 200
         revoked_payload = revoke_resp.json()
@@ -442,7 +458,7 @@ def test_revoke_token_blocks_refresh_and_ingest_and_records_audit(tmp_path: Path
         assert node["token"] == ""
         assert node["revoked_at"] is not None
         assert node["revoked_reason"] == "rotation-test"
-        assert node["revoked_by"] == "test-suite"
+        assert node["revoked_by"] == "alice-admin"
 
         audit = conn.execute(
             "SELECT event_type, actor, reason FROM security_audit_events WHERE node_id = ? ORDER BY id DESC LIMIT 1",
@@ -450,13 +466,14 @@ def test_revoke_token_blocks_refresh_and_ingest_and_records_audit(tmp_path: Path
         ).fetchone()
         assert audit is not None
         assert audit["event_type"] == "token_revoked"
-        assert audit["actor"] == "test-suite"
+        assert audit["actor"] == "alice-admin"
         assert audit["reason"] == "rotation-test"
 
 
 def test_bulk_update_nodes_applies_action_and_writes_audit(tmp_path: Path) -> None:
     db_path = tmp_path / "cluster.db"
     os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
     ensure_db(db_path)
 
     now_iso = utc_now_iso()
@@ -487,9 +504,10 @@ def test_bulk_update_nodes_applies_action_and_writes_audit(tmp_path: Path) -> No
                 "node_ids": [id1, id2],
                 "action": "set_poll_interval",
                 "poll_interval_seconds": 17,
-                "actor": "test-suite",
+                "actor": "spoofed-actor",
                 "reason": "fleet-tune",
             },
+            headers=_op_headers("operator-token"),
         )
         assert resp.status_code == 200
         payload = resp.json()
@@ -516,21 +534,102 @@ def test_bulk_update_nodes_applies_action_and_writes_audit(tmp_path: Path) -> No
         ).fetchall()
         assert len(audits) == 2
         assert all(a["event_type"] == "bulk_set_poll_interval" for a in audits)
-        assert all(a["actor"] == "test-suite" for a in audits)
+        assert all(a["actor"] == "bob-operator" for a in audits)
         assert all(a["reason"] == "fleet-tune" for a in audits)
 
 
 def test_bulk_update_nodes_rejects_invalid_action(tmp_path: Path) -> None:
     db_path = tmp_path / "cluster.db"
     os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
 
     with TestClient(app) as client:
         resp = client.post(
             "/api/v1/nodes/bulk-update",
             json={"node_ids": [1], "action": "invalid-action"},
+            headers=_op_headers("operator-token"),
         )
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Unsupported bulk action"
+
+
+def test_revoke_requires_auth_and_admin_role(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
+    ensure_db(db_path)
+    now_iso = utc_now_iso()
+    with get_conn(db_path) as conn:
+        node_id = int(
+            conn.execute(
+                """
+                INSERT INTO nodes (name, hostname, ip_address, token, role, poll_interval_seconds, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("pi-sec", "pi-sec.local", "10.0.0.33", "tok", "worker", 10, 1, now_iso, now_iso),
+            ).lastrowid
+        )
+
+    with TestClient(app) as client:
+        unauth = client.post(f"/api/v1/nodes/{node_id}/token/revoke", json={"reason": "r"})
+        assert unauth.status_code == 401
+
+        forbidden = client.post(
+            f"/api/v1/nodes/{node_id}/token/revoke",
+            json={"reason": "r"},
+            headers=_op_headers("operator-token"),
+        )
+        assert forbidden.status_code == 403
+
+
+def test_bulk_update_requires_auth_and_allows_operator(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
+    ensure_db(db_path)
+    now_iso = utc_now_iso()
+    with get_conn(db_path) as conn:
+        node_id = int(
+            conn.execute(
+                """
+                INSERT INTO nodes (name, hostname, ip_address, token, role, poll_interval_seconds, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("pi-bulk-auth", "pi-bulk-auth.local", "10.0.0.34", "tok", "worker", 10, 1, now_iso, now_iso),
+            ).lastrowid
+        )
+
+    with TestClient(app) as client:
+        unauth = client.post(
+            "/api/v1/nodes/bulk-update",
+            json={"node_ids": [node_id], "action": "set_enabled", "enabled": False},
+        )
+        assert unauth.status_code == 401
+
+        forbidden = client.post(
+            "/api/v1/nodes/bulk-update",
+            json={"node_ids": [node_id], "action": "set_enabled", "enabled": False},
+            headers=_op_headers("viewer-token"),
+        )
+        assert forbidden.status_code == 403
+
+        allowed = client.post(
+            "/api/v1/nodes/bulk-update",
+            json={"node_ids": [node_id], "action": "set_enabled", "enabled": False},
+            headers=_op_headers("operator-token"),
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["status"] == "updated"
+
+
+def test_read_only_cluster_summary_remains_unauthenticated(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
+
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/cluster/summary")
+        assert resp.status_code == 200
 
 
 def test_webhook_deliveries_api_returns_filtered_rows(tmp_path: Path) -> None:

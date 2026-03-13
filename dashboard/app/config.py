@@ -6,6 +6,24 @@ import os
 from pydantic import BaseModel
 
 
+def _parse_operator_credentials(raw: str) -> dict[str, dict[str, str]]:
+    # Format: token:principal:role,token2:principal2:role2
+    credentials: dict[str, dict[str, str]] = {}
+    valid_roles = {"viewer", "operator", "admin"}
+    for part in raw.split(","):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        pieces = [item.strip() for item in chunk.split(":", 2)]
+        if len(pieces) != 3:
+            continue
+        token, principal, role = pieces
+        if not token or not principal or role not in valid_roles:
+            continue
+        credentials[token] = {"principal": principal, "role": role}
+    return credentials
+
+
 class Settings(BaseModel):
     db_path: Path
     poll_base_seconds: int = 2
@@ -25,6 +43,7 @@ class Settings(BaseModel):
     webhook_retry_base_seconds: int = 15
     webhook_max_attempts: int = 5
     webhook_dispatch_interval_seconds: int = 5
+    operator_credentials: dict[str, dict[str, str]] = {}
 
 
 def get_settings() -> Settings:
@@ -51,4 +70,5 @@ def get_settings() -> Settings:
         webhook_retry_base_seconds=max(3, int(os.getenv("DASHBOARD_WEBHOOK_RETRY_BASE_SECONDS", "15"))),
         webhook_max_attempts=max(1, int(os.getenv("DASHBOARD_WEBHOOK_MAX_ATTEMPTS", "5"))),
         webhook_dispatch_interval_seconds=max(1, int(os.getenv("DASHBOARD_WEBHOOK_DISPATCH_INTERVAL_SECONDS", "5"))),
+        operator_credentials=_parse_operator_credentials(os.getenv("DASHBOARD_OPERATOR_CREDENTIALS", "").strip()),
     )
