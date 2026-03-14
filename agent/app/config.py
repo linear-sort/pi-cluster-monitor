@@ -19,6 +19,7 @@ class AgentSettings(BaseModel):
     push_enabled: bool = False
     push_interval_seconds: int = 10
     token_file: Path = Path("agent_token.txt")
+    local_secret_key: str = ""
     agent_id: str = ""
     agent_id_file: Path = Path("agent_id.txt")
 
@@ -41,6 +42,7 @@ def get_settings() -> AgentSettings:
         push_enabled=os.getenv("AGENT_PUSH_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
         push_interval_seconds=max(3, int(os.getenv("AGENT_PUSH_INTERVAL_SECONDS", "10"))),
         token_file=token_file,
+        local_secret_key=os.getenv("AGENT_LOCAL_SECRET_KEY", "").strip(),
         agent_id=os.getenv("AGENT_ID", "").strip(),
         agent_id_file=agent_id_file,
     )

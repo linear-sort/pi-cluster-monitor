@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import app.enrollment as enrollment_mod
 from app.config import AgentSettings
 from app.enrollment import (
     enrollment_loop,
@@ -36,6 +37,58 @@ def test_get_or_create_agent_id_persists(tmp_path: Path) -> None:
     save_agent_id(id_file, "agent-fixed")
     reused = get_or_create_agent_id(settings)
     assert reused == "agent-fixed"
+
+
+def test_save_token_encrypts_when_local_secret_key_configured(tmp_path: Path) -> None:
+    token_file = tmp_path / "agent_token.txt"
+    save_token_to_file(token_file, "abc123", secret_key="slice7-local-key")
+    stored = token_file.read_text(encoding="utf-8").strip()
+    assert stored.startswith("enc:v2:")
+    assert load_token_from_file(token_file, secret_key="slice7-local-key") == "abc123"
+
+
+def test_load_token_supports_legacy_plaintext_file(tmp_path: Path) -> None:
+    token_file = tmp_path / "agent_token.txt"
+    token_file.write_text("legacy-token", encoding="utf-8")
+    assert load_token_from_file(token_file, secret_key="slice7-local-key") == "legacy-token"
+
+
+def test_load_token_fails_closed_on_wrong_key(tmp_path: Path) -> None:
+    token_file = tmp_path / "agent_token.txt"
+    save_token_to_file(token_file, "abc123", secret_key="slice7-local-key")
+    assert load_token_from_file(token_file, secret_key="wrong-key") is None
+
+
+def test_save_agent_id_encrypts_when_local_secret_key_configured(tmp_path: Path) -> None:
+    id_file = tmp_path / "agent_id.txt"
+    save_agent_id(id_file, "agent-123", secret_key="slice7-local-key")
+    stored = id_file.read_text(encoding="utf-8").strip()
+    assert stored.startswith("enc:v2:")
+    assert load_agent_id(id_file, secret_key="slice7-local-key") == "agent-123"
+
+
+def test_load_token_rejects_insecure_permissions(monkeypatch, tmp_path: Path) -> None:
+    token_file = tmp_path / "agent_token.txt"
+    token_file.write_text("abc123", encoding="utf-8")
+
+    monkeypatch.setattr(enrollment_mod, "_is_windows", lambda: False)
+    monkeypatch.setattr(enrollment_mod, "_file_mode", lambda _path: 0o644)
+
+    with pytest.raises(PermissionError):
+        load_token_from_file(token_file)
+
+
+def test_save_token_applies_restrictive_permissions(monkeypatch, tmp_path: Path) -> None:
+    token_file = tmp_path / "agent_token.txt"
+    chmod_calls: list[int] = []
+
+    monkeypatch.setattr(enrollment_mod, "_is_windows", lambda: False)
+    monkeypatch.setattr(Path, "chmod", lambda self, mode: chmod_calls.append(mode))
+
+    save_token_to_file(token_file, "abc123")
+    assert token_file.exists()
+    assert chmod_calls
+    assert chmod_calls[-1] == 0o600
 
 
 @pytest.mark.asyncio
@@ -75,7 +128,7 @@ async def test_enrollment_loop_sets_runtime_and_persisted_token(monkeypatch, tmp
     monkeypatch.setattr("app.enrollment.asyncio.sleep", lambda _: original_sleep(0))
     monkeypatch.setattr(
         "app.enrollment.save_token_to_file",
-        lambda _path, token: (saved.__setitem__("token", token), token_saved_event.set()),
+        lambda _path, token, secret_key="": (saved.__setitem__("token", token), token_saved_event.set()),
     )
 
     task = asyncio.create_task(enrollment_loop(app))

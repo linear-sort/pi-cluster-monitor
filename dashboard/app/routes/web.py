@@ -25,7 +25,8 @@ from app.models import (
     TokenRefreshRequest,
     TokenRefreshResponse,
 )
-from app.security import request_correlation_id, require_operator
+from app.secret_store import open_secret, seal_secret
+from app.security import get_operator_auth_diagnostics, request_correlation_id, require_operator
 
 
 router = APIRouter()
@@ -36,6 +37,10 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 def _db_path(request: Request) -> Path:
     return request.app.state.settings.db_path
+
+
+def _node_token_key(request: Request) -> str:
+    return str(getattr(request.app.state.settings, "node_token_key", "") or "").strip()
 
 
 def _cluster_stats(conn) -> dict:
@@ -186,10 +191,11 @@ def _normalize_agent_id(value: str | None) -> str | None:
     return cleaned or None
 
 
-def _find_node_by_identity(conn, hostname: str, agent_id: str | None) -> dict | None:
+def _find_node_by_identity(conn, hostname: str, agent_id: str | None, token_key: str = "") -> dict | None:
     normalized_agent_id = _normalize_agent_id(agent_id)
+    row = None
     if normalized_agent_id:
-        return fetch_one_dict(
+        row = fetch_one_dict(
             conn,
             """
             SELECT id, hostname, agent_id, token, token_expires_at, previous_token, previous_token_expires_at, token_version, revoked_at
@@ -199,16 +205,22 @@ def _find_node_by_identity(conn, hostname: str, agent_id: str | None) -> dict | 
             """,
             (normalized_agent_id,),
         )
-    return fetch_one_dict(
-        conn,
-        """
-        SELECT id, hostname, agent_id, token, token_expires_at, previous_token, previous_token_expires_at, token_version, revoked_at
-        FROM nodes
-        WHERE hostname = ?
-        LIMIT 1
-        """,
-        (hostname.strip(),),
-    )
+    if row is None:
+        row = fetch_one_dict(
+            conn,
+            """
+            SELECT id, hostname, agent_id, token, token_expires_at, previous_token, previous_token_expires_at, token_version, revoked_at
+            FROM nodes
+            WHERE hostname = ?
+            LIMIT 1
+            """,
+            (hostname.strip(),),
+        )
+    if not row:
+        return None
+    row["token"] = open_secret(str(row.get("token") or ""), token_key)
+    row["previous_token"] = open_secret(str(row.get("previous_token") or ""), token_key)
+    return row
 
 
 def _fetch_node_read(conn, node_id: int) -> dict | None:
@@ -396,14 +408,17 @@ def save_node(
         collect_mode_value = "pull"
     enabled_bool = str(enabled).strip().lower() in {"1", "true", "yes", "on"}
     now_iso = utc_now_iso()
+    token_key = _node_token_key(request)
     with get_conn(_db_path(request)) as conn:
         if id:
             current = fetch_one_dict(conn, "SELECT token FROM nodes WHERE id = ? LIMIT 1", (id,))
             if not current:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
-            token_to_store = token_value or str(current.get("token") or "").strip()
+            current_token = open_secret(str(current.get("token") or ""), token_key)
+            token_to_store = token_value or current_token
             if not token_to_store:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token is required")
+            sealed_token = seal_secret(token_to_store, token_key)
             conn.execute(
                 """
                 UPDATE nodes
@@ -416,7 +431,7 @@ def save_node(
                     name.strip(),
                     hostname.strip(),
                     ip_address.strip(),
-                    token_to_store,
+                    sealed_token,
                     role.strip() or "worker",
                     int(agent_port),
                     1 if use_tls_bool else 0,
@@ -433,6 +448,7 @@ def save_node(
         else:
             if not token_value:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token is required")
+            sealed_token = seal_secret(token_value, token_key)
             conn.execute(
                 """
                 INSERT INTO nodes (
@@ -447,7 +463,7 @@ def save_node(
                     name.strip(),
                     hostname.strip(),
                     ip_address.strip(),
-                    token_value,
+                    sealed_token,
                     role.strip() or "worker",
                     int(agent_port),
                     1 if use_tls_bool else 0,
@@ -556,8 +572,8 @@ def api_loop_diagnostics(request: Request) -> dict:
     require_operator(request, min_role="viewer")
     poller = getattr(request.app.state, "poller", None)
     if poller is None:
-        return {"error": "poller_unavailable"}
-    return {"diagnostics": poller.get_diagnostics()}
+        return {"error": "poller_unavailable", "operator_auth": get_operator_auth_diagnostics()}
+    return {"diagnostics": poller.get_diagnostics(), "operator_auth": get_operator_auth_diagnostics()}
 
 
 @router.get("/api/v1/webhooks/deliveries")
@@ -640,7 +656,7 @@ async def api_ingest_metrics(request: Request, payload: IngestMetricsRequest) ->
     signed_message = f"{timestamp_header}.{nonce_header}.{body_for_signature}"
 
     with get_conn(_db_path(request)) as conn:
-        node = _find_node_by_identity(conn, hostname=payload.hostname, agent_id=payload.agent_id)
+        node = _find_node_by_identity(conn, hostname=payload.hostname, agent_id=payload.agent_id, token_key=_node_token_key(request))
         if not node:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
         if _normalize_agent_id(payload.agent_id) and payload.hostname.strip() != str(node.get("hostname") or "").strip():
@@ -740,6 +756,8 @@ def api_agent_enroll(request: Request, payload: EnrollmentRequest) -> Enrollment
     resolved_ip = payload.ip_address or (request.client.host if request.client else "unknown")
     resolved_name = (payload.name or payload.hostname).strip()
     normalized_agent_id = _normalize_agent_id(payload.agent_id)
+    token_key = _node_token_key(request)
+    sealed_issued_token = seal_secret(issued_token, token_key)
 
     node_id = 0
     try:
@@ -791,7 +809,7 @@ def api_agent_enroll(request: Request, payload: EnrollmentRequest) -> Enrollment
                         payload.hostname.strip(),
                         normalized_agent_id if normalized_agent_id else _normalize_agent_id(existing.get("agent_id")),
                         resolved_ip,
-                        issued_token,
+                        sealed_issued_token,
                         payload.role.strip() or "worker",
                         int(payload.agent_port),
                         max(3, int(payload.poll_interval_seconds)),
@@ -816,7 +834,7 @@ def api_agent_enroll(request: Request, payload: EnrollmentRequest) -> Enrollment
                         payload.hostname.strip(),
                         normalized_agent_id,
                         resolved_ip,
-                        issued_token,
+                        sealed_issued_token,
                         payload.role.strip() or "worker",
                         int(payload.agent_port),
                         max(3, int(payload.poll_interval_seconds)),
@@ -852,7 +870,8 @@ def api_token_refresh(request: Request, payload: TokenRefreshRequest) -> TokenRe
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
 
     with get_conn(_db_path(request)) as conn:
-        node = _find_node_by_identity(conn, hostname=payload.hostname, agent_id=payload.agent_id)
+        token_key = _node_token_key(request)
+        node = _find_node_by_identity(conn, hostname=payload.hostname, agent_id=payload.agent_id, token_key=token_key)
         if not node:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
         if _normalize_agent_id(payload.agent_id) and payload.hostname.strip() != str(node.get("hostname") or "").strip():
@@ -883,7 +902,7 @@ def api_token_refresh(request: Request, payload: TokenRefreshRequest) -> TokenRe
                 updated_at = ?
             WHERE id = ?
             """,
-            (previous_expires_at_iso, new_token, now_iso, expires_at_iso, now_iso, int(node["id"])),
+            (previous_expires_at_iso, seal_secret(new_token, token_key), now_iso, expires_at_iso, now_iso, int(node["id"])),
         )
 
     return TokenRefreshResponse(

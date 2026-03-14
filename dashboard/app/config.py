@@ -1,26 +1,54 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 import os
 
 from pydantic import BaseModel
 
 
-def _parse_operator_credentials(raw: str) -> dict[str, dict[str, str]]:
-    # Format: token:principal:role,token2:principal2:role2
-    credentials: dict[str, dict[str, str]] = {}
+def _parse_expiry_epoch(value: str) -> float | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        pass
+    try:
+        dt = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except ValueError:
+        return None
+
+
+def _parse_operator_credentials(raw: str) -> dict[str, dict[str, str | float | None]]:
+    # Format: token:principal:role[:expires_at][:status]
+    credentials: dict[str, dict[str, str | float | None]] = {}
     valid_roles = {"viewer", "operator", "admin"}
+    valid_status = {"active", "revoked"}
     for part in raw.split(","):
         chunk = part.strip()
         if not chunk:
             continue
-        pieces = [item.strip() for item in chunk.split(":", 2)]
-        if len(pieces) != 3:
+        pieces = [item.strip() for item in chunk.split(":")]
+        if len(pieces) < 3:
             continue
-        token, principal, role = pieces
+        token, principal, role = pieces[0], pieces[1], pieces[2]
         if not token or not principal or role not in valid_roles:
             continue
-        credentials[token] = {"principal": principal, "role": role}
+        expires_at_epoch = _parse_expiry_epoch(pieces[3]) if len(pieces) >= 4 else None
+        status = pieces[4].strip().lower() if len(pieces) >= 5 else "active"
+        if status not in valid_status:
+            status = "active"
+        credentials[token] = {
+            "principal": principal,
+            "role": role,
+            "expires_at_epoch": expires_at_epoch,
+            "status": status,
+        }
     return credentials
 
 
@@ -43,7 +71,11 @@ class Settings(BaseModel):
     webhook_retry_base_seconds: int = 15
     webhook_max_attempts: int = 5
     webhook_dispatch_interval_seconds: int = 5
-    operator_credentials: dict[str, dict[str, str]] = {}
+    node_token_key: str = ""
+    operator_credentials: dict[str, dict[str, str | float | None]] = {}
+    operator_auth_window_seconds: int = 60
+    operator_auth_max_failures: int = 5
+    operator_auth_lockout_seconds: int = 120
 
 
 def get_settings() -> Settings:
@@ -70,5 +102,9 @@ def get_settings() -> Settings:
         webhook_retry_base_seconds=max(3, int(os.getenv("DASHBOARD_WEBHOOK_RETRY_BASE_SECONDS", "15"))),
         webhook_max_attempts=max(1, int(os.getenv("DASHBOARD_WEBHOOK_MAX_ATTEMPTS", "5"))),
         webhook_dispatch_interval_seconds=max(1, int(os.getenv("DASHBOARD_WEBHOOK_DISPATCH_INTERVAL_SECONDS", "5"))),
+        node_token_key=os.getenv("DASHBOARD_NODE_TOKEN_KEY", "").strip(),
         operator_credentials=_parse_operator_credentials(os.getenv("DASHBOARD_OPERATOR_CREDENTIALS", "").strip()),
+        operator_auth_window_seconds=max(10, int(os.getenv("DASHBOARD_OPERATOR_AUTH_WINDOW_SECONDS", "60"))),
+        operator_auth_max_failures=max(2, int(os.getenv("DASHBOARD_OPERATOR_AUTH_MAX_FAILURES", "5"))),
+        operator_auth_lockout_seconds=max(10, int(os.getenv("DASHBOARD_OPERATOR_AUTH_LOCKOUT_SECONDS", "120"))),
     )

@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import get_settings
 from app.db import ensure_db
 from app.routes.web import router as web_router
+from app.security import reset_operator_auth_state
 from app.services.poller import PollingService
 
 load_dotenv(Path(__file__).resolve().parents[1] / '.env')
@@ -19,6 +20,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / '.env')
 async def lifespan(app: FastAPI):
     settings = get_settings()
     ensure_db(settings.db_path)
+    reset_operator_auth_state()
 
     app.state.settings = settings
     app.state.poller = PollingService(
@@ -36,6 +38,7 @@ async def lifespan(app: FastAPI):
         webhook_retry_base_seconds=settings.webhook_retry_base_seconds,
         webhook_max_attempts=settings.webhook_max_attempts,
         webhook_dispatch_interval_seconds=settings.webhook_dispatch_interval_seconds,
+        node_token_key=settings.node_token_key,
     )
     app.state.poller.start()
 

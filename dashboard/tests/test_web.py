@@ -24,6 +24,9 @@ def _set_operator_creds() -> None:
             "viewer-token:victor-viewer:viewer",
         ]
     )
+    os.environ["DASHBOARD_OPERATOR_AUTH_WINDOW_SECONDS"] = "60"
+    os.environ["DASHBOARD_OPERATOR_AUTH_MAX_FAILURES"] = "5"
+    os.environ["DASHBOARD_OPERATOR_AUTH_LOCKOUT_SECONDS"] = "120"
 
 
 def _op_headers(token: str) -> dict[str, str]:
@@ -717,6 +720,75 @@ def test_loop_diagnostics_requires_viewer_auth_and_returns_payload(tmp_path: Pat
         assert "poll" in payload
         assert "webhook" in payload
         assert "recent_errors" in payload
+        assert "operator_auth" in viewer.json()
+
+
+def test_revoke_rejects_expired_operator_token(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    now = int(time.time())
+    os.environ["DASHBOARD_OPERATOR_CREDENTIALS"] = (
+        f"expired-admin:alice-admin:admin:{now - 60}:active,"
+        f"active-admin:bob-admin:admin:{now + 3600}:active"
+    )
+    ensure_db(db_path)
+    now_iso = utc_now_iso()
+    with get_conn(db_path) as conn:
+        node_id = int(
+            conn.execute(
+                """
+                INSERT INTO nodes (name, hostname, ip_address, token, role, poll_interval_seconds, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("pi-exp", "pi-exp.local", "10.0.0.77", "tok", "worker", 10, 1, now_iso, now_iso),
+            ).lastrowid
+        )
+
+    with TestClient(app) as client:
+        expired = client.post(
+            f"/api/v1/nodes/{node_id}/token/revoke",
+            json={"reason": "r"},
+            headers=_op_headers("expired-admin"),
+        )
+        assert expired.status_code == 401
+        assert expired.json()["detail"] == "Operator token expired"
+
+        active = client.post(
+            f"/api/v1/nodes/{node_id}/token/revoke",
+            json={"reason": "r"},
+            headers=_op_headers("active-admin"),
+        )
+        assert active.status_code == 200
+
+
+def test_operator_auth_throttles_repeated_invalid_tokens(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    _set_operator_creds()
+    os.environ["DASHBOARD_OPERATOR_AUTH_WINDOW_SECONDS"] = "60"
+    os.environ["DASHBOARD_OPERATOR_AUTH_MAX_FAILURES"] = "2"
+    os.environ["DASHBOARD_OPERATOR_AUTH_LOCKOUT_SECONDS"] = "120"
+
+    with TestClient(app) as client:
+        payload = {"node_ids": [1], "action": "set_enabled", "enabled": False}
+        first = client.post(
+            "/api/v1/nodes/bulk-update",
+            json=payload,
+            headers=_op_headers("invalid-token"),
+        )
+        assert first.status_code == 401
+        second = client.post(
+            "/api/v1/nodes/bulk-update",
+            json=payload,
+            headers=_op_headers("invalid-token"),
+        )
+        assert second.status_code == 429
+
+        diag = client.get("/api/v1/diagnostics/loops", headers=_op_headers("viewer-token"))
+        assert diag.status_code == 200
+        auth_payload = diag.json()["operator_auth"]
+        assert auth_payload["counters"]["invalid"] >= 1
+        assert auth_payload["counters"]["throttled"] >= 1
 
 
 def test_sensitive_detail_routes_require_operator_auth(tmp_path: Path) -> None:
@@ -969,3 +1041,76 @@ def test_openapi_mutation_models_do_not_expose_actor_field(tmp_path: Path) -> No
         bulk_props = schemas["BulkNodeUpdateRequest"]["properties"]
         assert "actor" not in revoke_props
         assert "actor" not in bulk_props
+
+
+def test_settings_save_encrypts_node_token_at_rest_when_key_configured(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_NODE_TOKEN_KEY"] = "dev-secret-key-for-tests"
+    _set_operator_creds()
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/settings/nodes/save",
+            data={
+                "name": "pi-secure",
+                "hostname": "pi-secure.local",
+                "ip_address": "10.0.0.101",
+                "token": "plain-secret-token",
+                "role": "worker",
+                "agent_port": 8001,
+                "poll_interval_seconds": 10,
+                "enabled": "true",
+            },
+            headers=_op_headers("operator-token"),
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT token FROM nodes WHERE hostname = ?", ("pi-secure.local",)).fetchone()
+        assert row is not None
+        stored = str(row["token"] or "")
+        assert stored != "plain-secret-token"
+        assert stored.startswith("enc:v")
+
+
+def test_encrypted_node_token_supports_refresh_runtime_flow(tmp_path: Path) -> None:
+    db_path = tmp_path / "cluster.db"
+    os.environ["DASHBOARD_DB_PATH"] = str(db_path)
+    os.environ["DASHBOARD_ENROLL_SECRET"] = "enroll-secret"
+    os.environ["DASHBOARD_NODE_TOKEN_KEY"] = "dev-secret-key-for-tests"
+    _set_operator_creds()
+
+    with TestClient(app) as client:
+        enroll_resp = client.post(
+            "/api/v1/enroll",
+            json={
+                "enroll_secret": "enroll-secret",
+                "hostname": "pi-encrypted.local",
+                "agent_id": "agent-encrypted-1",
+                "name": "pi-encrypted",
+                "ip_address": "10.0.0.102",
+                "agent_port": 8001,
+                "role": "worker",
+                "poll_interval_seconds": 10,
+            },
+        )
+        assert enroll_resp.status_code == 200
+        issued_token = enroll_resp.json()["token"]
+
+        node_id = int(enroll_resp.json()["node_id"])
+        with get_conn(db_path) as conn:
+            row = conn.execute("SELECT token FROM nodes WHERE id = ?", (node_id,)).fetchone()
+            assert row is not None
+            stored = str(row["token"] or "")
+            assert stored != issued_token
+            assert stored.startswith("enc:v")
+
+        refresh_resp = client.post(
+            "/api/v1/token/refresh",
+            json={"hostname": "pi-encrypted.local", "agent_id": "agent-encrypted-1"},
+            headers={"Authorization": f"Bearer {issued_token}"},
+        )
+        assert refresh_resp.status_code == 200
+        assert refresh_resp.json()["token"] != issued_token

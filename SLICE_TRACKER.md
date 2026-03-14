@@ -94,7 +94,8 @@ Each "Latest Update" entry must include:
 | 3 | Transport Trust (TLS) | done | HTTPS polling and trust verification options |
 | 4 | Hybrid Push/Pull Metrics | done | Agent push ingest path with replay protection and dedupe |
 | 5 | Ops Hardening + Fleet Controls | released | Token rotation/revocation, bulk ops, alert/webhook hardening |
-| 6 | Control Plane Security + Identity Integrity | planned | Operator authZ, authenticated audit actor, stable node identity binding, runtime error observability |
+| 6 | Control Plane Security + Identity Integrity | released | Operator authZ, authenticated audit actor, stable node identity binding, runtime error observability |
+| 7 | Secret Lifecycle + Auth Abuse Hardening | in_progress | Operator credential lifecycle, auth throttling/lockout, secret-at-rest hygiene |
 
 ---
 
@@ -931,6 +932,177 @@ This reflects current behavior in code so future slices extend, not contradict, 
 
 ---
 
+## Slice 7 - Secret Lifecycle + Auth Abuse Hardening
+
+**Status:** `in_progress`  
+**Goal:** Reduce blast radius from credential compromise and harden authentication surfaces against brute-force and replay abuse.
+
+### Why This Slice Exists
+
+Current implementation has important residual security weaknesses after Slice 6 completion:
+- operator credentials are configured as long-lived plaintext shared tokens via env (`DASHBOARD_OPERATOR_CREDENTIALS`)
+- operator auth checks are direct token map lookups without lifecycle controls (expiry/revocation)
+- no explicit auth abuse throttling/lockout path for repeated invalid operator-token attempts
+- agent and dashboard secrets remain stored in plaintext at rest (`agent_token.txt`, `nodes.token`, `nodes.previous_token`)
+
+### Deliverables
+
+- Operator credential lifecycle model:
+  - support credential issue metadata (principal, role, created_at, expires_at, status)
+  - enforce expiry and revocation at request time
+  - define safe rotation with overlap/grace windows
+- Auth abuse resistance:
+  - add rate limiting/backoff for failed operator auth attempts
+  - add lockout or escalating cooldown strategy by source/principal bucket
+  - return explicit `429` contract where throttling is applied
+- Secret-at-rest hygiene:
+  - harden agent token/id file handling (permission expectations and startup validation)
+  - define dashboard secret storage hardening plan (hashing/encryption strategy and key management contract)
+- Security telemetry and audit enrichment:
+  - track auth-failure categories (`invalid`, `expired`, `revoked`, `throttled`)
+  - include correlation and source metadata for suspicious auth activity
+
+### Design Guardrails
+
+- Keep rollout non-breaking:
+  - preserve compatibility path from static operator tokens during migration window
+  - require explicit deprecation milestone before removing legacy token config
+- Fail closed:
+  - protected routes must reject unknown/expired/revoked credentials deterministically
+  - throttling controls must not bypass authorization checks
+- Keep operationally usable:
+  - avoid lockout designs that can deadlock emergency admin access
+  - include documented break-glass recovery path
+- Minimize sensitive data persistence:
+  - avoid adding new plaintext credential surfaces in logs, DB, or response payloads
+
+### Tests Required
+
+- Credential lifecycle tests:
+  - active credential succeeds
+  - expired/revoked credential rejected
+  - rotation overlap path works without downtime
+- Abuse-control tests:
+  - repeated invalid tokens trigger throttling/lockout behavior
+  - throttled paths return stable `429` semantics and recovery behavior
+- Secret-hygiene tests:
+  - agent token/id file permission guard behavior
+  - dashboard credential storage verification path (hashed/encrypted contract checks)
+- Regression tests:
+  - valid operator flows still pass under normal traffic
+  - agent enrollment/refresh/push flows unaffected by control-plane auth hardening
+
+### Deployment Gate
+
+- Security suite (lifecycle + abuse + secret-hygiene) passes in CI.
+- Rotation and break-glass runbook validated in staging smoke test.
+- Backward-compatible migration path from static env tokens is documented and tested.
+- Images published to GHCR for target release tags.
+- Compose env image tags updated to promoted release tags.
+- Post-deploy smoke validation completed and recorded.
+
+### Checklist
+
+- [x] Operator credential lifecycle model implemented
+- [x] Credential rotation/expiry/revocation enforcement implemented
+- [x] Auth abuse throttling/lockout implemented
+- [x] Secret-at-rest hardening plan implemented for agent/dashboard auth materials
+- [x] Security telemetry/audit enrichment implemented
+- [x] Tests added and green
+- [ ] Images published (GHCR)
+- [ ] Compose env tags updated
+- [ ] Post-deploy smoke validation completed
+
+### Latest Update
+
+- 2026-03-13
+  - PR: N/A (planning update)
+  - Added Slice 7 from post-Slice-6 architecture review.
+  - Deferred risks explicitly moved to Slice 7:
+    - static plaintext operator credential model without lifecycle enforcement
+    - missing auth abuse throttling/lockout controls for operator-token checks
+    - plaintext secret-at-rest surfaces in agent files and dashboard token columns
+  - CI evidence: N/A (planning only)
+  - Deploy/smoke evidence: N/A (planning only)
+- 2026-03-13
+  - Slice 7 increment 1 completed (operator auth lifecycle + abuse controls):
+    - Extended operator credential contract to support optional expiry/status metadata while preserving existing token format compatibility.
+    - Enforced operator token expiry/revocation checks at runtime for protected routes.
+    - Added operator auth abuse throttling/lockout with explicit `429` behavior after repeated auth failures.
+    - Added operator auth diagnostics telemetry (failure categories + recent auth events) and included it in dashboard diagnostics API.
+  - Test evidence:
+    - dashboard lifecycle + throttling + diagnostics coverage added and green (`43 passed`)
+    - agent regression suite remains green (`12 passed`)
+  - CI evidence: pending (local validation complete)
+  - Deploy/smoke evidence: N/A (not released)
+- 2026-03-14
+  - Slice 7 increment 2 started (dashboard secret-at-rest hardening path):
+    - Upgraded node token at-rest sealing from legacy `enc:v1` stream-XOR format to `enc:v2` authenticated encryption (AES-GCM via `cryptography`).
+    - Preserved backward compatibility by keeping `enc:v1` read support so existing encrypted rows continue to decrypt.
+    - Added unit coverage for v2 round-trip, v1 compatibility, and wrong-key fail-closed behavior.
+    - Updated deployment/config surfaces to wire `DASHBOARD_NODE_TOKEN_KEY` in compose/env examples and README.
+  - Test evidence:
+    - dashboard targeted suites green:
+      - `dashboard/tests/test_secret_store.py` (`3 passed`)
+      - `dashboard/tests/test_web.py` secret-at-rest cases (`2 passed`)
+      - full `dashboard/tests/test_web.py` regression (`28 passed`)
+  - CI evidence: pending (local validation complete)
+  - Deploy/smoke evidence: N/A (not released)
+  - Deferred risk accepted into next increment:
+    - agent-side token/id file encryption-at-rest not implemented yet (permission hardening remains in place).
+- 2026-03-14
+  - Slice 7 increment 3 completed (agent secret-at-rest hardening path):
+    - Added agent local secret store (`enc:v2` AES-GCM) for persisted auth materials.
+    - `AGENT_TOKEN_FILE` and `AGENT_ID_FILE` now seal on write and decrypt on read when `AGENT_LOCAL_SECRET_KEY` is configured.
+    - Preserved compatibility with existing plaintext files (legacy values remain readable during migration).
+    - Added compose/env/README wiring for `AGENT_LOCAL_SECRET_KEY`.
+  - Test evidence:
+    - agent secret-hygiene and runtime regression suites green:
+      - `agent/tests/test_enrollment.py` (`10 passed`)
+      - `agent/tests/test_secret_store.py` (`3 passed`)
+      - `agent/tests/test_push.py` (`3 passed`)
+  - CI evidence: pending (local validation complete)
+  - Deploy/smoke evidence: N/A (not released)
+- 2026-03-14
+  - Slice 7 increment 4 completed (release-readiness + ops runbook):
+    - Added `SLICE7_RUNBOOK.md` covering credential rotation, break-glass lockout recovery, and secret-at-rest migration paths.
+    - Linked runbook in `README.md` for operator discoverability.
+    - Ran full local regression suites for both services after Slice 7 security changes.
+  - Test evidence:
+    - dashboard full suite: `dashboard/tests` (`48 passed`)
+    - agent full suite: `agent/tests` (`21 passed`)
+  - CI evidence: pending (local validation complete)
+  - Deploy/smoke evidence: N/A (not released)
+- 2026-03-14
+  - Slice 7 increment 5 completed (release execution checklist):
+    - Added `SLICE7_RELEASE_CHECKLIST.md` with step-by-step promotion commands for:
+      - test validation
+      - tag/publish flow
+      - compose tag updates
+      - deploy + post-deploy smoke
+      - tracker evidence capture template
+    - Linked checklist from `SLICE7_RUNBOOK.md` and `README.md`.
+  - CI evidence: N/A (documentation/process increment)
+  - Deploy/smoke evidence: N/A (not released)
+- 2026-03-14
+  - Slice 7 increment 6 completed (tag convention alignment):
+    - Updated `SLICE7_RELEASE_CHECKLIST.md` tag guidance to follow prior release pattern:
+      - `v0.<slice>.<patch>-slice<slice>-<topic>`
+    - Added concrete Slice 7 example tag: `v0.7.1-slice7-secret-hardening`.
+  - CI evidence: N/A (documentation/process increment)
+  - Deploy/smoke evidence: N/A (not released)
+- 2026-03-14
+  - Slice 7 increment 7 completed (release checklist prefill):
+    - Prefilled `SLICE7_RELEASE_CHECKLIST.md` with repository-specific release defaults:
+      - owner: `linear-sort`
+      - candidate tag: `v0.7.1-slice7-secret-hardening`
+      - current commit SHA: `8d80b63`
+    - Updated tag/push and image-tag examples to use the prefilled Slice 7 candidate tag.
+  - CI evidence: N/A (documentation/process increment)
+  - Deploy/smoke evidence: N/A (not released)
+
+---
+
 ## Update Protocol (How to Maintain This File)
 
 On each PR:
@@ -974,3 +1146,10 @@ On each PR:
     - some node read payloads still originate from `SELECT * FROM nodes`, increasing accidental secret-leak risk
     - API models retain optional `actor` request fields despite principal-derived audit attribution
   - These residual risks are now tracked as Slice 6.4 scope.
+- 2026-03-13 post-Slice-6 residual risk audit:
+  - Confirmed Slice 6 shipped with auth boundary, identity binding, redaction, and telemetry diagnostics.
+  - Identified unresolved hardening gaps:
+    - operator credentials still rely on static plaintext shared-token env mapping
+    - operator auth paths still lack explicit brute-force throttling/lockout controls
+    - agent/dashboard bearer secrets remain plaintext at rest
+  - These risks are now tracked as Slice 7 scope.

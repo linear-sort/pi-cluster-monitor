@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from app.db import fetch_all_dict, get_conn, utc_now_iso
 from app.models import AgentMetrics
+from app.secret_store import open_secret
 from app.services.alerts import evaluate_metric_thresholds, evaluate_offline_alert
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ class PollingService:
         webhook_retry_base_seconds: int = 15,
         webhook_max_attempts: int = 5,
         webhook_dispatch_interval_seconds: int = 5,
+        node_token_key: str = "",
     ) -> None:
         self.db_path = db_path
         self.base_tick_seconds = max(1, base_tick_seconds)
@@ -52,6 +54,7 @@ class PollingService:
         self.webhook_retry_base_seconds = max(3, webhook_retry_base_seconds)
         self.webhook_max_attempts = max(1, webhook_max_attempts)
         self.webhook_dispatch_interval_seconds = max(1, webhook_dispatch_interval_seconds)
+        self.node_token_key = node_token_key.strip()
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._last_poll: dict[int, float] = {}
@@ -161,7 +164,10 @@ class PollingService:
         node_id = int(node["id"])
         self._bump("poll", "attempts")
         ip = node["ip_address"]
-        token = node["token"]
+        token = open_secret(str(node["token"] or ""), self.node_token_key)
+        if not token:
+            await self._record_failure(node_id, "auth_failure", "missing_or_unreadable_node_token", reachable=True)
+            return
         port = int(node.get("agent_port") or 8001)
         use_tls = bool(int(node.get("use_tls") or 0))
         tls_verify = bool(int(node.get("tls_verify") or 1))

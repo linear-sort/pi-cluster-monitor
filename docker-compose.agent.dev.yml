@@ -19,6 +19,7 @@ services:
       AGENT_PUSH_ENABLED: "false"
       AGENT_PUSH_INTERVAL_SECONDS: 10
       AGENT_TOKEN_FILE: /data/agent_token.txt
+      AGENT_LOCAL_SECRET_KEY: ${AGENT_LOCAL_SECRET_KEY:-}
       AGENT_ID: ""
       AGENT_ID_FILE: /data/agent_id.txt
     volumes:

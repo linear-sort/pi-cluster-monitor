@@ -3,6 +3,8 @@
 A lightweight, self-hosted cluster monitoring system for Raspberry Pi devices on a LAN.
 
 Planning and execution tracker: see `SLICE_TRACKER.md`.
+Slice 7 operations runbook: see `SLICE7_RUNBOOK.md`.
+Slice 7 release checklist: see `SLICE7_RELEASE_CHECKLIST.md`.
 
 ## Features
 
@@ -234,7 +236,11 @@ docker compose -f docker-compose.agent.dev.yml up -d --build
 - `DASHBOARD_WEBHOOK_RETRY_BASE_SECONDS` (default: `15`)
 - `DASHBOARD_WEBHOOK_MAX_ATTEMPTS` (default: `5`)
 - `DASHBOARD_WEBHOOK_DISPATCH_INTERVAL_SECONDS` (default: `5`)
-- `DASHBOARD_OPERATOR_CREDENTIALS` (default: empty; format: `token:principal:role,...` where role is `viewer|operator|admin`)
+- `DASHBOARD_NODE_TOKEN_KEY` (default: empty; when set, node bearer tokens are encrypted at rest using `enc:v2` authenticated encryption and legacy `enc:v1` values are still readable)
+- `DASHBOARD_OPERATOR_CREDENTIALS` (default: empty; format: `token:principal:role[:expires_at_epoch_or_iso][:status],...` where role is `viewer|operator|admin` and status is `active|revoked`)
+- `DASHBOARD_OPERATOR_AUTH_WINDOW_SECONDS` (default: `60`; rolling window for failed auth attempts)
+- `DASHBOARD_OPERATOR_AUTH_MAX_FAILURES` (default: `5`; failures before lockout)
+- `DASHBOARD_OPERATOR_AUTH_LOCKOUT_SECONDS` (default: `120`; lockout duration after threshold)
 
 ### Agent env vars
 
@@ -250,6 +256,7 @@ docker compose -f docker-compose.agent.dev.yml up -d --build
 - `AGENT_PUSH_ENABLED` (default: `false`)
 - `AGENT_PUSH_INTERVAL_SECONDS` (default: `10`)
 - `AGENT_TOKEN_FILE` (default: `agent_token.txt`)
+- `AGENT_LOCAL_SECRET_KEY` (default: empty; when set, `AGENT_TOKEN_FILE` and `AGENT_ID_FILE` are encrypted at rest with `enc:v2`, while legacy plaintext files remain readable)
 - `AGENT_ID` (optional stable identity override)
 - `AGENT_ID_FILE` (default: `agent_id.txt`; persisted identity fallback)
 
@@ -299,6 +306,12 @@ Control-plane authorization policy:
   - `GET /api/v1/cluster/summary`
   - `GET /api/v1/nodes`
   - `GET /api/v1/alerts`
+
+Operator token hardening behavior:
+
+- Expired/revoked credentials are rejected with `401`.
+- Repeated invalid/missing auth attempts from the same source bucket are throttled with `429`.
+- `GET /api/v1/diagnostics/loops` includes operator auth failure counters/events for troubleshooting.
 
 Push ingest signature headers:
 

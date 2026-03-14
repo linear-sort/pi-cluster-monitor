@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import stat
 from pathlib import Path
 import secrets
 import socket
@@ -10,6 +12,7 @@ from typing import Any
 import httpx
 
 from app.config import AgentSettings
+from app.secret_store import open_secret, seal_secret
 
 logger = logging.getLogger(__name__)
 
@@ -25,40 +28,71 @@ def _loop_telemetry_bucket(app) -> dict[str, Any]:
     )
 
 
-def load_token_from_file(token_file: Path) -> str | None:
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _file_mode(secret_file: Path) -> int:
+    return stat.S_IMODE(secret_file.stat().st_mode)
+
+
+def _validate_secret_file_permissions(secret_file: Path) -> None:
+    if _is_windows() or not secret_file.exists():
+        return
+    mode = _file_mode(secret_file)
+    if mode & 0o077:
+        raise PermissionError(f"Insecure permissions for secret file: {secret_file}")
+
+
+def _set_restrictive_permissions(secret_file: Path) -> None:
+    if _is_windows():
+        return
+    try:
+        secret_file.chmod(0o600)
+    except Exception:
+        logger.warning("Unable to set restrictive permissions on secret file: %s", secret_file)
+
+
+def load_token_from_file(token_file: Path, secret_key: str = "") -> str | None:
     if not token_file.exists():
         return None
-    token = token_file.read_text(encoding="utf-8").strip()
+    _validate_secret_file_permissions(token_file)
+    stored = token_file.read_text(encoding="utf-8").strip()
+    token = open_secret(stored, secret_key)
     return token or None
 
 
-def save_token_to_file(token_file: Path, token: str) -> None:
+def save_token_to_file(token_file: Path, token: str, secret_key: str = "") -> None:
     token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(token.strip(), encoding="utf-8")
+    token_file.write_text(seal_secret(token.strip(), secret_key), encoding="utf-8")
+    _set_restrictive_permissions(token_file)
 
 
-def load_agent_id(agent_id_file: Path) -> str | None:
+def load_agent_id(agent_id_file: Path, secret_key: str = "") -> str | None:
     if not agent_id_file.exists():
         return None
-    value = agent_id_file.read_text(encoding="utf-8").strip()
+    _validate_secret_file_permissions(agent_id_file)
+    stored = agent_id_file.read_text(encoding="utf-8").strip()
+    value = open_secret(stored, secret_key)
     return value or None
 
 
-def save_agent_id(agent_id_file: Path, agent_id: str) -> None:
+def save_agent_id(agent_id_file: Path, agent_id: str, secret_key: str = "") -> None:
     agent_id_file.parent.mkdir(parents=True, exist_ok=True)
-    agent_id_file.write_text(agent_id.strip(), encoding="utf-8")
+    agent_id_file.write_text(seal_secret(agent_id.strip(), secret_key), encoding="utf-8")
+    _set_restrictive_permissions(agent_id_file)
 
 
 def get_or_create_agent_id(settings: AgentSettings) -> str:
     from_env = settings.agent_id.strip()
     if from_env:
-        save_agent_id(settings.agent_id_file, from_env)
+        save_agent_id(settings.agent_id_file, from_env, settings.local_secret_key)
         return from_env
-    from_file = load_agent_id(settings.agent_id_file)
+    from_file = load_agent_id(settings.agent_id_file, settings.local_secret_key)
     if from_file:
         return from_file
     generated = f"agent-{secrets.token_hex(8)}"
-    save_agent_id(settings.agent_id_file, generated)
+    save_agent_id(settings.agent_id_file, generated, settings.local_secret_key)
     return generated
 
 
@@ -134,7 +168,7 @@ async def enrollment_loop(app) -> None:
                 if token:
                     app.state.auth_token = token
                     app.state.token_version = int(token_version or 1)
-                    save_token_to_file(settings.token_file, token)
+                    save_token_to_file(settings.token_file, token, settings.local_secret_key)
                     telemetry["successes"] = int(telemetry.get("successes", 0)) + 1
                     telemetry["last_error"] = ""
             elif settings.token_refresh_enabled and settings.dashboard_url and current_token:
@@ -147,7 +181,7 @@ async def enrollment_loop(app) -> None:
                 if token:
                     app.state.auth_token = token
                     app.state.token_version = int(token_version or current_version)
-                    save_token_to_file(settings.token_file, token)
+                    save_token_to_file(settings.token_file, token, settings.local_secret_key)
                     telemetry["successes"] = int(telemetry.get("successes", 0)) + 1
                     telemetry["last_error"] = ""
         except asyncio.CancelledError:
