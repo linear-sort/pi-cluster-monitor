@@ -9,7 +9,7 @@ Related docs:
 
 ## Inputs (Fill Before Starting)
 
-- Release tag (follow prior convention): `v0.7.1-slice7-secret-hardening`
+- Release tag (follow prior convention): `v0.7.2-slice7-secret-hardening-fix`
 - GitHub owner/org: `linear-sort`
 - Commit SHA (release target): `8d80b63`
 - Deployment environment: `<staging|prod>`
@@ -51,15 +51,15 @@ Record:
 ## 3) Create and Push Release Tag
 
 ```powershell
-git tag v0.7.1-slice7-secret-hardening
-git push origin v0.7.1-slice7-secret-hardening
+git tag v0.7.2-slice7-secret-hardening-fix
+git push origin v0.7.2-slice7-secret-hardening-fix
 ```
 
 Example:
 
 ```powershell
-git tag v0.7.1-slice7-secret-hardening
-git push origin v0.7.1-slice7-secret-hardening
+git tag v0.7.2-slice7-secret-hardening-fix
+git push origin v0.7.2-slice7-secret-hardening-fix
 ```
 
 ## 4) Verify Image Publish Workflow
@@ -95,8 +95,8 @@ Copy-Item images.env.example .env
 Set:
 
 ```dotenv
-DASHBOARD_IMAGE=ghcr.io/linear-sort/pi-dashboard:v0.7.1-slice7-secret-hardening
-AGENT_IMAGE=ghcr.io/linear-sort/pi-agent:v0.7.1-slice7-secret-hardening
+DASHBOARD_IMAGE=ghcr.io/linear-sort/pi-dashboard:v0.7.2-slice7-secret-hardening-fix
+AGENT_IMAGE=ghcr.io/linear-sort/pi-agent:v0.7.2-slice7-secret-hardening-fix
 ```
 
 Commit these env/tag updates in deployment repo/process as applicable.
@@ -171,15 +171,15 @@ Copy this into `SLICE_TRACKER.md` under Slice 7 `Latest Update`:
 
 ```markdown
 - YYYY-MM-DD
-  - Slice 7 release promotion completed for `v0.7.1-slice7-secret-hardening`.
+  - Slice 7 release promotion completed for `v0.7.2-slice7-secret-hardening-fix`.
   - CI evidence:
     - `CI Tests` run: <url> (`dashboard-tests`: success, `agent-tests`: success)
     - `Build and Publish Docker Images` run: <url> (`test-dashboard`: success, `test-agent`: success, `build-and-push`: success)
   - Image evidence:
-    - `ghcr.io/linear-sort/pi-dashboard:v0.7.1-slice7-secret-hardening` digest: `<digest>`
-    - `ghcr.io/linear-sort/pi-agent:v0.7.1-slice7-secret-hardening` digest: `<digest>`
+    - `ghcr.io/linear-sort/pi-dashboard:v0.7.2-slice7-secret-hardening-fix` digest: `<digest>`
+    - `ghcr.io/linear-sort/pi-agent:v0.7.2-slice7-secret-hardening-fix` digest: `<digest>`
   - Deployment evidence:
-    - compose tags updated in `.env` to `v0.7.1-slice7-secret-hardening`
+    - compose tags updated in `.env` to `v0.7.2-slice7-secret-hardening-fix`
     - dashboard + agent services restarted successfully
   - Smoke evidence:
     - auth contract checks (`200/401/429`) passed

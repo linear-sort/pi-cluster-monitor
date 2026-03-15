@@ -1100,6 +1100,20 @@ Current implementation has important residual security weaknesses after Slice 6 
     - Updated tag/push and image-tag examples to use the prefilled Slice 7 candidate tag.
   - CI evidence: N/A (documentation/process increment)
   - Deploy/smoke evidence: N/A (not released)
+- 2026-03-14
+  - Slice 7 increment 8 completed (CI parity fix for agent secret-file test):
+    - Diagnosed release workflow failures on `v0.7.1-slice7-secret-hardening` to the agent legacy plaintext compatibility test under Linux permission enforcement.
+    - Updated `agent/tests/test_enrollment.py` to create legacy plaintext fixture via `save_token_to_file(..., secret_key=\"\")`, preserving secure file mode expectations on non-Windows runners.
+    - Updated release checklist candidate tag to `v0.7.2-slice7-secret-hardening-fix`.
+  - Test evidence:
+    - local full suites remain green:
+      - `dashboard/tests` (`48 passed`)
+      - `agent/tests` (`21 passed`)
+  - CI evidence:
+    - failed run captured for prior tag `v0.7.1-slice7-secret-hardening`:
+      - `CI Tests`: https://github.com/linear-sort/pi-cluster-monitor/actions/runs/23099030565 (`agent-tests` failed, `dashboard-tests` passed)
+      - `Build and Publish Docker Images`: https://github.com/linear-sort/pi-cluster-monitor/actions/runs/23099031294 (`test-agent` failed, `test-dashboard` passed, `build-and-push` skipped)
+  - Deploy/smoke evidence: N/A (not released)
 
 ---
 

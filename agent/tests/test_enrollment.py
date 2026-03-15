@@ -49,7 +49,8 @@ def test_save_token_encrypts_when_local_secret_key_configured(tmp_path: Path) ->
 
 def test_load_token_supports_legacy_plaintext_file(tmp_path: Path) -> None:
     token_file = tmp_path / "agent_token.txt"
-    token_file.write_text("legacy-token", encoding="utf-8")
+    # Save without a key to keep legacy plaintext format while preserving secure file permissions.
+    save_token_to_file(token_file, "legacy-token", secret_key="")
     assert load_token_from_file(token_file, secret_key="slice7-local-key") == "legacy-token"
 
 
